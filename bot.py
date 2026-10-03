@@ -87,6 +87,7 @@ def get_database_connection() -> sqlite3.Connection:
 
 def initialize_database() -> None:
     connection = get_database_connection()
+
     try:
         connection.executescript(
             """
@@ -97,6 +98,7 @@ def initialize_database() -> None:
                 service TEXT NOT NULL,
                 area TEXT NOT NULL,
                 price TEXT NOT NULL,
+                telegram_id INTEGER,
                 created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
             );
 
@@ -122,7 +124,24 @@ def initialize_database() -> None:
             );
             """
         )
+
+        # Эски база бўлса, telegram_id устунини қўшиш
+        worker_columns = connection.execute(
+            "PRAGMA table_info(workers)"
+        ).fetchall()
+
+        column_names = {
+            column["name"]
+            for column in worker_columns
+        }
+
+        if "telegram_id" not in column_names:
+            connection.execute(
+                "ALTER TABLE workers ADD COLUMN telegram_id INTEGER"
+            )
+
         connection.commit()
+
     finally:
         connection.close()
 
@@ -135,15 +154,30 @@ def save_order(
     problem: str,
 ) -> None:
     connection = get_database_connection()
+
     try:
         connection.execute(
             """
-            INSERT INTO orders (service, name, phone, address, problem)
+            INSERT INTO orders (
+                service,
+                name,
+                phone,
+                address,
+                problem
+            )
             VALUES (?, ?, ?, ?, ?)
             """,
-            (service, name, phone, address, problem),
+            (
+                service,
+                name,
+                phone,
+                address,
+                problem,
+            ),
         )
+
         connection.commit()
+
     finally:
         connection.close()
 
@@ -154,17 +188,68 @@ def save_worker(
     service: str,
     area: str,
     price: str,
+    telegram_id: int | None,
 ) -> None:
     connection = get_database_connection()
+
     try:
-        connection.execute(
+        existing = connection.execute(
             """
-            INSERT INTO workers (name, phone, service, area, price)
-            VALUES (?, ?, ?, ?, ?)
+            SELECT id
+            FROM workers
+            WHERE phone = ?
+            ORDER BY id DESC
+            LIMIT 1
             """,
-            (name, phone, service, area, price),
-        )
+            (phone,),
+        ).fetchone()
+
+        if existing:
+            connection.execute(
+                """
+                UPDATE workers
+                SET
+                    name = ?,
+                    service = ?,
+                    area = ?,
+                    price = ?,
+                    telegram_id = ?
+                WHERE id = ?
+                """,
+                (
+                    name,
+                    service,
+                    area,
+                    price,
+                    telegram_id,
+                    existing["id"],
+                ),
+            )
+        else:
+            connection.execute(
+                """
+                INSERT INTO workers (
+                    name,
+                    phone,
+                    service,
+                    area,
+                    price,
+                    telegram_id
+                )
+                VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    name,
+                    phone,
+                    service,
+                    area,
+                    price,
+                    telegram_id,
+                ),
+            )
+
         connection.commit()
+
     finally:
         connection.close()
 
@@ -178,111 +263,175 @@ def save_announcement(
     details: str,
 ) -> None:
     connection = get_database_connection()
+
     try:
         connection.execute(
             """
             INSERT INTO announcements (
-                name, phone, service, address, budget, details
+                name,
+                phone,
+                service,
+                address,
+                budget,
+                details
             )
             VALUES (?, ?, ?, ?, ?, ?)
             """,
-            (name, phone, service, address, budget, details),
+            (
+                name,
+                phone,
+                service,
+                address,
+                budget,
+                details,
+            ),
         )
+
         connection.commit()
+
     finally:
         connection.close()
 
 
 def get_workers() -> list[sqlite3.Row]:
     connection = get_database_connection()
+
     try:
         return connection.execute(
             """
-            SELECT name, phone, service, area, price, created_at
+            SELECT
+                name,
+                phone,
+                service,
+                area,
+                price,
+                telegram_id,
+                created_at
             FROM workers
             ORDER BY id DESC
             """
         ).fetchall()
+
     finally:
         connection.close()
 
 
 def get_orders() -> list[sqlite3.Row]:
     connection = get_database_connection()
+
     try:
         return connection.execute(
             """
-            SELECT service, name, phone, address, problem, created_at
+            SELECT
+                service,
+                name,
+                phone,
+                address,
+                problem,
+                created_at
             FROM orders
             ORDER BY id DESC
             """
         ).fetchall()
+
     finally:
         connection.close()
 
 
 def get_announcements() -> list[sqlite3.Row]:
     connection = get_database_connection()
+
     try:
         return connection.execute(
             """
-            SELECT name, phone, service, address, budget, details, created_at
+            SELECT
+                name,
+                phone,
+                service,
+                address,
+                budget,
+                details,
+                created_at
             FROM announcements
             ORDER BY id DESC
             """
         ).fetchall()
+
     finally:
         connection.close()
 
 
 def get_statistics() -> dict[str, int]:
     connection = get_database_connection()
+
     try:
         return {
             "workers": connection.execute(
                 "SELECT COUNT(*) FROM workers"
             ).fetchone()[0],
+
             "announcements": connection.execute(
                 "SELECT COUNT(*) FROM announcements"
             ).fetchone()[0],
+
             "orders": connection.execute(
                 "SELECT COUNT(*) FROM orders"
             ).fetchone()[0],
         }
+
     finally:
         connection.close()
 
 
 def normalize_service_name(service: str) -> str:
     normalized = service.casefold()
+
     normalized = "".join(
         character
         for character in normalized
         if character != "\ufe0f"
-        and not unicodedata.category(character).startswith(("So", "Sk"))
+        and not unicodedata.category(character).startswith(
+            ("So", "Sk")
+        )
     )
+
     normalized = " ".join(normalized.split())
+
     return normalized.translate(CYRILLIC_TO_LATIN)
 
 
-def get_matching_workers(service: str) -> list[sqlite3.Row]:
+def get_matching_workers(
+    service: str,
+) -> list[sqlite3.Row]:
+
     requested_service = normalize_service_name(service)
+
     connection = get_database_connection()
+
     try:
         workers = connection.execute(
             """
-            SELECT name, service, area, price, phone
+            SELECT
+                name,
+                service,
+                area,
+                price,
+                phone,
+                telegram_id
             FROM workers
             ORDER BY id DESC
             """
         ).fetchall()
+
     finally:
         connection.close()
 
     return [
         worker
         for worker in workers
-        if normalize_service_name(worker["service"]) == requested_service
+        if normalize_service_name(
+            worker["service"]
+        ) == requested_service
     ]
 
 
@@ -290,12 +439,15 @@ def format_matching_workers(
     service: str,
     workers: list[sqlite3.Row],
 ) -> str:
+
     if not workers:
         return (
-            "😔 Ҳозирча бу хизмат бўйича рўйхатдан ўтган уста топилмади."
+            "😔 Ҳозирча бу хизмат бўйича "
+            "рўйхатдан ўтган уста топилмади."
         )
 
     service_name = normalize_service_name(service)
+
     records = [
         (
             f"#{index} {display_value(worker['name'])}\n"
@@ -304,32 +456,52 @@ def format_matching_workers(
             f"💰 {display_value(worker['price'])}\n"
             f"📞 {display_value(worker['phone'])}"
         )
-        for index, worker in enumerate(workers, start=1)
+        for index, worker in enumerate(
+            workers,
+            start=1,
+        )
     ]
-    return "👨‍🔧 Мос усталар:\n\n" + "\n\n".join(records)
+
+    return (
+        "👨‍🔧 Мос усталар:\n\n"
+        + "\n\n".join(records)
+    )
 
 
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+# =========================
+# START
+# =========================
+
+async def start(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+):
+
     keyboard = [
         ["🔧 Хизматлар", "👨‍🔧 Уста чақириш"],
         ["📢 Эълон бериш", "📞 Алоқа"],
     ]
 
-    await update.message.reply_text(
-        "🛠 Osh Service ботга хуш келибсиз!\n\n"
-        "Керакли хизматни танланг:",
-        reply_markup=ReplyKeyboardMarkup(
-            keyboard,
-            resize_keyboard=True
-        ),
-    )
+    if update.message:
+        await update.message.reply_text(
+            "🛠 Osh Service ботга хуш келибсиз!\n\n"
+            "Керакли хизматни танланг:",
+            reply_markup=ReplyKeyboardMarkup(
+                keyboard,
+                resize_keyboard=True,
+            ),
+        )
 
 
 # =========================
 # ХИЗМАТЛАР
 # =========================
 
-async def services(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def services(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+):
+
     keyboard = [
         ["🔧 Сантехник", "⚡ Электрик"],
         ["📱 Телефон таъмири", "💻 Компьютер таъмири"],
@@ -341,12 +513,16 @@ async def services(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "🔧 Қайси хизмат керак?",
         reply_markup=ReplyKeyboardMarkup(
             keyboard,
-            resize_keyboard=True
+            resize_keyboard=True,
         ),
     )
 
 
-async def service_selected(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def service_selected(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+):
+
     service = update.message.text
 
     if service == "⬅️ Орқага":
@@ -355,11 +531,19 @@ async def service_selected(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     context.user_data["service"] = service
 
-    matching_workers = get_matching_workers(service)
+    matching_workers = get_matching_workers(
+        service
+    )
+
     for matching_message in split_message(
-        format_matching_workers(service, matching_workers)
+        format_matching_workers(
+            service,
+            matching_workers,
+        )
     ):
-        await update.message.reply_text(matching_message)
+        await update.message.reply_text(
+            matching_message
+        )
 
     await update.message.reply_text(
         f"Танланган хизмат: {service}\n\n"
@@ -369,7 +553,11 @@ async def service_selected(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return NAME
 
 
-async def get_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def get_name(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+):
+
     context.user_data["name"] = update.message.text
 
     await update.message.reply_text(
@@ -379,7 +567,11 @@ async def get_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return PHONE
 
 
-async def get_phone(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def get_phone(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+):
+
     context.user_data["phone"] = update.message.text
 
     await update.message.reply_text(
@@ -389,17 +581,26 @@ async def get_phone(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return ADDRESS
 
 
-async def get_address(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def get_address(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+):
+
     context.user_data["address"] = update.message.text
 
     await update.message.reply_text(
-        "📝 Муаммони ёки сизга керак бўлган хизматни ёзинг:"
+        "📝 Муаммони ёки сизга керак бўлган "
+        "хизматни ёзинг:"
     )
 
     return PROBLEM
 
 
-async def get_problem(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def get_problem(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+):
+
     context.user_data["problem"] = update.message.text
 
     service = context.user_data["service"]
@@ -427,13 +628,62 @@ async def get_problem(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await context.bot.send_message(
         chat_id=ADMIN_ID,
-        text=admin_message
+        text=admin_message,
     )
 
-    await update.message.reply_text(
-        "✅ Буюртмангиз қабул қилинди!\n\n"
-        "Тез орада администратор сиз билан боғланади."
+    matching_workers = get_matching_workers(
+        service
     )
+
+    notified_workers = 0
+
+    worker_message = (
+        "🔔 СИЗГА ЯНГИ БУЮРТМА!\n\n"
+        f"🔧 Хизмат: {service}\n"
+        f"👤 Мижоз: {name}\n"
+        f"📞 Телефон: {phone}\n"
+        f"📍 Манзил: {address}\n"
+        f"📝 Муаммо: {problem}\n\n"
+        "Мижоз билан телефон орқали боғланишингиз мумкин."
+    )
+
+    for worker in matching_workers:
+
+        telegram_id = worker["telegram_id"]
+
+        if not telegram_id:
+            continue
+
+        try:
+            await context.bot.send_message(
+                chat_id=telegram_id,
+                text=worker_message,
+            )
+
+            notified_workers += 1
+
+        except Exception:
+            logging.exception(
+                "Устага хабар юборишда хато: %s",
+                telegram_id,
+            )
+
+    if notified_workers > 0:
+
+        await update.message.reply_text(
+            "✅ Буюртмангиз қабул қилинди!\n\n"
+            f"👨‍🔧 {notified_workers} та мос устага "
+            "буюртма ҳақида хабар берилди."
+        )
+
+    else:
+
+        await update.message.reply_text(
+            "✅ Буюртмангиз қабул қилинди!\n\n"
+            "Ҳозирча мос устага Telegram орқали "
+            "хабар бериш имкони бўлмади.\n"
+            "Администратор сиз билан боғланади."
+        )
 
     context.user_data.clear()
 
@@ -443,10 +693,14 @@ async def get_problem(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 # =========================
-# УСТА РЎЙХАТДАН ЎТИШИ
+# УСТА
 # =========================
 
-async def worker_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def worker_start(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+):
+
     keyboard = [
         ["👨‍🔧 Уста бўлиб рўйхатдан ўтиш"],
         ["⬅️ Орқага"],
@@ -458,12 +712,16 @@ async def worker_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "бот орқали рўйхатдан ўтишингиз мумкин.",
         reply_markup=ReplyKeyboardMarkup(
             keyboard,
-            resize_keyboard=True
+            resize_keyboard=True,
         ),
     )
 
 
-async def worker_register(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def worker_register(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+):
+
     if update.message.text == "⬅️ Орқага":
         await start(update, context)
         return ConversationHandler.END
@@ -475,7 +733,11 @@ async def worker_register(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return WORKER_NAME
 
 
-async def get_worker_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def get_worker_name(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+):
+
     context.user_data["worker_name"] = update.message.text
 
     await update.message.reply_text(
@@ -485,18 +747,27 @@ async def get_worker_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return WORKER_PHONE
 
 
-async def get_worker_phone(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def get_worker_phone(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+):
+
     context.user_data["worker_phone"] = update.message.text
 
     await update.message.reply_text(
         "🔧 Қайси хизматни қиласиз?\n\n"
-        "Масалан: сантехник, электрик, телефон таъмири"
+        "Масалан: сантехник, электрик, "
+        "телефон таъмири"
     )
 
     return WORKER_SERVICE
 
 
-async def get_worker_service(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def get_worker_service(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+):
+
     context.user_data["worker_service"] = update.message.text
 
     await update.message.reply_text(
@@ -507,7 +778,11 @@ async def get_worker_service(update: Update, context: ContextTypes.DEFAULT_TYPE)
     return WORKER_AREA
 
 
-async def get_worker_area(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def get_worker_area(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+):
+
     context.user_data["worker_area"] = update.message.text
 
     await update.message.reply_text(
@@ -518,7 +793,11 @@ async def get_worker_area(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return WORKER_PRICE
 
 
-async def get_worker_price(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def get_worker_price(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+):
+
     context.user_data["worker_price"] = update.message.text
 
     name = context.user_data["worker_name"]
@@ -527,12 +806,15 @@ async def get_worker_price(update: Update, context: ContextTypes.DEFAULT_TYPE):
     area = context.user_data["worker_area"]
     price = context.user_data["worker_price"]
 
+    telegram_id = update.effective_user.id
+
     save_worker(
         name=name,
         phone=phone,
         service=service,
         area=area,
         price=price,
+        telegram_id=telegram_id,
     )
 
     admin_message = (
@@ -546,12 +828,15 @@ async def get_worker_price(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await context.bot.send_message(
         chat_id=ADMIN_ID,
-        text=admin_message
+        text=admin_message,
     )
 
     await update.message.reply_text(
         "✅ Маълумотларингиз қабул қилинди!\n\n"
-        "Администратор маълумотларни текширади."
+        "Администратор маълумотларни текширади.\n\n"
+        "📲 Telegram ID ҳам сақланди. "
+        "Кейин мос буюртма келганда сизга "
+        "Telegram орқали хабар юборилади."
     )
 
     context.user_data.clear()
@@ -562,10 +847,14 @@ async def get_worker_price(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 # =========================
-# ЭЪЛОН БЕРИШ
+# ЭЪЛОН
 # =========================
 
-async def announcement_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def announcement_start(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+):
+
     await update.message.reply_text(
         "📢 Эълон бериш\n\n"
         "Аввало исмингизни ёзинг:"
@@ -574,7 +863,11 @@ async def announcement_start(update: Update, context: ContextTypes.DEFAULT_TYPE)
     return ANNOUNCEMENT_NAME
 
 
-async def get_announcement_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def get_announcement_name(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+):
+
     context.user_data["announcement_name"] = update.message.text
 
     await update.message.reply_text(
@@ -584,7 +877,11 @@ async def get_announcement_name(update: Update, context: ContextTypes.DEFAULT_TY
     return ANNOUNCEMENT_PHONE
 
 
-async def get_announcement_phone(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def get_announcement_phone(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+):
+
     context.user_data["announcement_phone"] = update.message.text
 
     await update.message.reply_text(
@@ -594,7 +891,11 @@ async def get_announcement_phone(update: Update, context: ContextTypes.DEFAULT_T
     return ANNOUNCEMENT_SERVICE
 
 
-async def get_announcement_service(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def get_announcement_service(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+):
+
     context.user_data["announcement_service"] = update.message.text
 
     await update.message.reply_text(
@@ -604,7 +905,11 @@ async def get_announcement_service(update: Update, context: ContextTypes.DEFAULT
     return ANNOUNCEMENT_ADDRESS
 
 
-async def get_announcement_address(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def get_announcement_address(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+):
+
     context.user_data["announcement_address"] = update.message.text
 
     await update.message.reply_text(
@@ -614,7 +919,11 @@ async def get_announcement_address(update: Update, context: ContextTypes.DEFAULT
     return ANNOUNCEMENT_BUDGET
 
 
-async def get_announcement_budget(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def get_announcement_budget(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+):
+
     context.user_data["announcement_budget"] = update.message.text
 
     await update.message.reply_text(
@@ -624,7 +933,11 @@ async def get_announcement_budget(update: Update, context: ContextTypes.DEFAULT_
     return ANNOUNCEMENT_DETAILS
 
 
-async def get_announcement_details(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def get_announcement_details(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+):
+
     context.user_data["announcement_details"] = update.message.text
 
     name = context.user_data["announcement_name"]
@@ -655,12 +968,13 @@ async def get_announcement_details(update: Update, context: ContextTypes.DEFAULT
 
     await context.bot.send_message(
         chat_id=ADMIN_ID,
-        text=admin_message
+        text=admin_message,
     )
 
     await update.message.reply_text(
         "✅ Эълонингиз қабул қилинди!\n\n"
-        "Администратор маълумотларни кўриб чиқади ва сиз билан боғланади."
+        "Администратор маълумотларни кўриб чиқади "
+        "ва сиз билан боғланади."
     )
 
     context.user_data.clear()
@@ -671,21 +985,35 @@ async def get_announcement_details(update: Update, context: ContextTypes.DEFAULT
 
 
 # =========================
-# БОШҚА БУТТОНЛАР
+# ЁРДАМ
 # =========================
 
-async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def help_command(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+):
+
     await update.message.reply_text(
         "Менюдан керакли хизматни танланг."
     )
 
 
+# =========================
+# ADMIN
+# =========================
+
 def is_admin(update: Update) -> bool:
+
     user = update.effective_user
-    return user is not None and user.id == ADMIN_ID
+
+    return (
+        user is not None
+        and user.id == ADMIN_ID
+    )
 
 
 def admin_keyboard() -> InlineKeyboardMarkup:
+
     return InlineKeyboardMarkup(
         [
             [
@@ -713,6 +1041,7 @@ def admin_keyboard() -> InlineKeyboardMarkup:
 
 
 def admin_back_keyboard() -> InlineKeyboardMarkup:
+
     return InlineKeyboardMarkup(
         [
             [
@@ -725,22 +1054,40 @@ def admin_back_keyboard() -> InlineKeyboardMarkup:
     )
 
 
-def display_value(value: object, limit: int = 500) -> str:
+def display_value(
+    value: object,
+    limit: int = 500,
+) -> str:
+
     text = str(value)
+
     if len(text) <= limit:
         return text
+
     return f"{text[:limit - 1]}…"
 
 
-def split_message(text: str, max_length: int = 3500) -> list[str]:
+def split_message(
+    text: str,
+    max_length: int = 3500,
+) -> list[str]:
+
     chunks: list[str] = []
     current_lines: list[str] = []
     current_length = 0
 
     for line in text.splitlines():
+
         line_length = len(line) + 1
-        if current_lines and current_length + line_length > max_length:
-            chunks.append("\n".join(current_lines))
+
+        if (
+            current_lines
+            and current_length + line_length > max_length
+        ):
+            chunks.append(
+                "\n".join(current_lines)
+            )
+
             current_lines = []
             current_length = 0
 
@@ -748,15 +1095,22 @@ def split_message(text: str, max_length: int = 3500) -> list[str]:
         current_length += line_length
 
     if current_lines:
-        chunks.append("\n".join(current_lines))
+        chunks.append(
+            "\n".join(current_lines)
+        )
 
     return chunks or [text]
 
 
 def format_workers() -> str:
+
     workers = get_workers()
+
     if not workers:
-        return "👨‍🔧 Усталар\n\nҲозирча рўйхатдан ўтган усталар йўқ."
+        return (
+            "👨‍🔧 Усталар\n\n"
+            "Ҳозирча рўйхатдан ўтган усталар йўқ."
+        )
 
     records = [
         (
@@ -768,15 +1122,28 @@ def format_workers() -> str:
             f"💰 Нарх: {display_value(worker['price'])}\n"
             f"🕒 Сана: {display_value(worker['created_at'])}"
         )
-        for index, worker in enumerate(workers, start=1)
+        for index, worker in enumerate(
+            workers,
+            start=1,
+        )
     ]
-    return f"👨‍🔧 Усталар\n\nЖами: {len(workers)}\n\n" + "\n\n".join(records)
+
+    return (
+        f"👨‍🔧 Усталар\n\n"
+        f"Жами: {len(workers)}\n\n"
+        + "\n\n".join(records)
+    )
 
 
 def format_announcements() -> str:
+
     announcements = get_announcements()
+
     if not announcements:
-        return "📢 Эълонлар\n\nҲозирча эълонлар йўқ."
+        return (
+            "📢 Эълонлар\n\n"
+            "Ҳозирча эълонлар йўқ."
+        )
 
     records = [
         (
@@ -789,15 +1156,28 @@ def format_announcements() -> str:
             f"📝 Тафсилот: {display_value(announcement['details'])}\n"
             f"🕒 Сана: {display_value(announcement['created_at'])}"
         )
-        for index, announcement in enumerate(announcements, start=1)
+        for index, announcement in enumerate(
+            announcements,
+            start=1,
+        )
     ]
-    return f"📢 Эълонлар\n\nЖами: {len(announcements)}\n\n" + "\n\n".join(records)
+
+    return (
+        f"📢 Эълонлар\n\n"
+        f"Жами: {len(announcements)}\n\n"
+        + "\n\n".join(records)
+    )
 
 
 def format_orders() -> str:
+
     orders = get_orders()
+
     if not orders:
-        return "🔔 Буюртмалар\n\nҲозирча буюртмалар йўқ."
+        return (
+            "🔔 Буюртмалар\n\n"
+            "Ҳозирча буюртмалар йўқ."
+        )
 
     records = [
         (
@@ -809,18 +1189,29 @@ def format_orders() -> str:
             f"📝 Муаммо: {display_value(order['problem'])}\n"
             f"🕒 Сана: {display_value(order['created_at'])}"
         )
-        for index, order in enumerate(orders, start=1)
+        for index, order in enumerate(
+            orders,
+            start=1,
+        )
     ]
-    return f"🔔 Буюртмалар\n\nЖами: {len(orders)}\n\n" + "\n\n".join(records)
+
+    return (
+        f"🔔 Буюртмалар\n\n"
+        f"Жами: {len(orders)}\n\n"
+        + "\n\n".join(records)
+    )
 
 
 def format_statistics() -> str:
+
     statistics = get_statistics()
+
     total = (
         statistics["workers"]
         + statistics["announcements"]
         + statistics["orders"]
     )
+
     return (
         "📊 Статистика\n\n"
         f"👨‍🔧 Усталар: {statistics['workers']}\n"
@@ -830,11 +1221,18 @@ def format_statistics() -> str:
     )
 
 
-async def admin_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def admin_command(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+):
+
     if not is_admin(update):
+
         await update.message.reply_text(
-            "⛔ Сизда админ панелидан фойдаланиш ҳуқуқи йўқ."
+            "⛔ Сизда админ панелидан "
+            "фойдаланиш ҳуқуқи йўқ."
         )
+
         return
 
     await update.message.reply_text(
@@ -844,22 +1242,32 @@ async def admin_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 
-async def admin_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def admin_button(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+):
+
     query = update.callback_query
+
     await query.answer()
 
     if query.from_user.id != ADMIN_ID:
+
         await query.edit_message_text(
-            "⛔ Сизда админ панелидан фойдаланиш ҳуқуқи йўқ."
+            "⛔ Сизда админ панелидан "
+            "фойдаланиш ҳуқуқи йўқ."
         )
+
         return
 
     if query.data == "admin:back":
+
         await query.edit_message_text(
             "🔐 Админ панели\n\n"
             "Керакли бўлимни танланг:",
             reply_markup=admin_keyboard(),
         )
+
         return
 
     section_formatters = {
@@ -868,58 +1276,95 @@ async def admin_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "admin:orders": format_orders,
         "admin:stats": format_statistics,
     }
-    formatter = section_formatters.get(query.data)
+
+    formatter = section_formatters.get(
+        query.data
+    )
+
     if formatter is None:
+
         await query.edit_message_text(
             "⚠️ Номаълум админ панели бўлими.",
             reply_markup=admin_keyboard(),
         )
+
         return
 
-    messages = split_message(formatter())
+    messages = split_message(
+        formatter()
+    )
+
     await query.edit_message_text(
         messages[0],
         reply_markup=admin_back_keyboard(),
     )
 
     if query.message is not None:
+
         for message in messages[1:]:
+
             await context.bot.send_message(
                 chat_id=query.message.chat_id,
                 text=message,
             )
 
 
-async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+# =========================
+# МЕНЮ
+# =========================
+
+async def handle_message(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+):
+
     text = update.message.text
 
     if text == "🔧 Хизматлар":
-        await services(update, context)
+
+        await services(
+            update,
+            context,
+        )
 
     elif text == "👨‍🔧 Уста чақириш":
-        await worker_start(update, context)
+
+        await worker_start(
+            update,
+            context,
+        )
 
     elif text == "📢 Эълон бериш":
-        await announcement_start(update, context)
+
+        await announcement_start(
+            update,
+            context,
+        )
 
     elif text == "📞 Алоқа":
+
         await update.message.reply_text(
             "📞 Администратор билан боғланиш учун "
             "хизмат буюртмасини қолдиринг."
         )
 
     else:
+
         await update.message.reply_text(
-            "Илтимос, менюдаги тугмалардан бирини танланг."
+            "Илтимос, менюдаги тугмалардан "
+            "бирини танланг."
         )
 
 
 # =========================
-# ИШГА ТУШИРИШ
+# APPLICATION
 # =========================
 
-def main():
-    token = os.getenv("TELEGRAM_BOT_TOKEN")
+def create_application() -> Application:
+
+    token = os.getenv(
+        "TELEGRAM_BOT_TOKEN"
+    )
 
     if not token:
         raise RuntimeError(
@@ -933,10 +1378,15 @@ def main():
 
     initialize_database()
 
-    application = Application.builder().token(token).build()
+    application = (
+        Application.builder()
+        .token(token)
+        .build()
+    )
 
     # Мижоз буюртмаси
     order_conversation = ConversationHandler(
+
         entry_points=[
             MessageHandler(
                 filters.Regex(
@@ -946,155 +1396,245 @@ def main():
                 service_selected,
             )
         ],
+
         states={
+
             NAME: [
                 MessageHandler(
                     filters.TEXT & ~filters.COMMAND,
-                    get_name
+                    get_name,
                 )
             ],
+
             PHONE: [
                 MessageHandler(
                     filters.TEXT & ~filters.COMMAND,
-                    get_phone
+                    get_phone,
                 )
             ],
+
             ADDRESS: [
                 MessageHandler(
                     filters.TEXT & ~filters.COMMAND,
-                    get_address
+                    get_address,
                 )
             ],
+
             PROBLEM: [
                 MessageHandler(
                     filters.TEXT & ~filters.COMMAND,
-                    get_problem
+                    get_problem,
                 )
             ],
         },
+
         fallbacks=[],
     )
 
-    # Уста рўйхатдан ўтиши
+    # Уста
     worker_conversation = ConversationHandler(
+
         entry_points=[
             MessageHandler(
-                filters.Regex("^👨‍🔧 Уста бўлиб рўйхатдан ўтиш$"),
+                filters.Regex(
+                    "^👨‍🔧 Уста бўлиб рўйхатдан ўтиш$"
+                ),
                 worker_register,
             )
         ],
+
         states={
+
             WORKER_NAME: [
                 MessageHandler(
                     filters.TEXT & ~filters.COMMAND,
-                    get_worker_name
+                    get_worker_name,
                 )
             ],
+
             WORKER_PHONE: [
                 MessageHandler(
                     filters.TEXT & ~filters.COMMAND,
-                    get_worker_phone
+                    get_worker_phone,
                 )
             ],
+
             WORKER_SERVICE: [
                 MessageHandler(
                     filters.TEXT & ~filters.COMMAND,
-                    get_worker_service
+                    get_worker_service,
                 )
             ],
+
             WORKER_AREA: [
                 MessageHandler(
                     filters.TEXT & ~filters.COMMAND,
-                    get_worker_area
+                    get_worker_area,
                 )
             ],
+
             WORKER_PRICE: [
                 MessageHandler(
                     filters.TEXT & ~filters.COMMAND,
-                    get_worker_price
+                    get_worker_price,
                 )
             ],
         },
+
         fallbacks=[],
     )
 
-    # Эълон бериш
+    # Эълон
     announcement_conversation = ConversationHandler(
+
         entry_points=[
             MessageHandler(
-                filters.Regex("^📢 Эълон бериш$"),
+                filters.Regex(
+                    "^📢 Эълон бериш$"
+                ),
                 announcement_start,
             )
         ],
+
         states={
+
             ANNOUNCEMENT_NAME: [
                 MessageHandler(
                     filters.TEXT & ~filters.COMMAND,
-                    get_announcement_name
+                    get_announcement_name,
                 )
             ],
+
             ANNOUNCEMENT_PHONE: [
                 MessageHandler(
                     filters.TEXT & ~filters.COMMAND,
-                    get_announcement_phone
+                    get_announcement_phone,
                 )
             ],
+
             ANNOUNCEMENT_SERVICE: [
                 MessageHandler(
                     filters.TEXT & ~filters.COMMAND,
-                    get_announcement_service
+                    get_announcement_service,
                 )
             ],
+
             ANNOUNCEMENT_ADDRESS: [
                 MessageHandler(
                     filters.TEXT & ~filters.COMMAND,
-                    get_announcement_address
+                    get_announcement_address,
                 )
             ],
+
             ANNOUNCEMENT_BUDGET: [
                 MessageHandler(
                     filters.TEXT & ~filters.COMMAND,
-                    get_announcement_budget
+                    get_announcement_budget,
                 )
             ],
+
             ANNOUNCEMENT_DETAILS: [
                 MessageHandler(
                     filters.TEXT & ~filters.COMMAND,
-                    get_announcement_details
+                    get_announcement_details,
                 )
             ],
         },
+
         fallbacks=[],
     )
 
     application.add_handler(
-        CommandHandler("start", start)
+        CommandHandler(
+            "start",
+            start,
+        )
     )
 
     application.add_handler(
-        CommandHandler("help", help_command)
+        CommandHandler(
+            "help",
+            help_command,
+        )
     )
 
     application.add_handler(
-        CommandHandler("admin", admin_command)
+        CommandHandler(
+            "admin",
+            admin_command,
+        )
     )
 
-    application.add_handler(order_conversation)
-    application.add_handler(worker_conversation)
-    application.add_handler(announcement_conversation)
+    application.add_handler(
+        order_conversation
+    )
 
     application.add_handler(
-        CallbackQueryHandler(admin_button, pattern="^admin:")
+        worker_conversation
+    )
+
+    application.add_handler(
+        announcement_conversation
+    )
+
+    application.add_handler(
+        CallbackQueryHandler(
+            admin_button,
+            pattern="^admin:",
+        )
     )
 
     application.add_handler(
         MessageHandler(
             filters.TEXT & ~filters.COMMAND,
-            handle_message
+            handle_message,
         )
     )
 
-    application.run_polling()
+    return application
+
+
+# =========================
+# RENDER + TELEGRAM WEBHOOK
+# =========================
+
+def main():
+
+    application = create_application()
+
+    port = int(
+        os.getenv(
+            "PORT",
+            "10000",
+        )
+    )
+
+    render_url = os.getenv(
+        "RENDER_EXTERNAL_URL"
+    )
+
+    if not render_url:
+        raise RuntimeError(
+            "RENDER_EXTERNAL_URL топилмади."
+        )
+
+    webhook_url = (
+        render_url.rstrip("/")
+        + "/telegram"
+    )
+
+    logging.info(
+        "Telegram webhook: %s",
+        webhook_url,
+    )
+
+    application.run_webhook(
+        listen="0.0.0.0",
+        port=port,
+        url_path="telegram",
+        webhook_url=webhook_url,
+        drop_pending_updates=True,
+    )
 
 
 if __name__ == "__main__":

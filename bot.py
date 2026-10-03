@@ -21,9 +21,9 @@ from telegram.ext import (
 )
 
 
-# =========================
+# =========================================================
 # SETTINGS
-# =========================
+# =========================================================
 
 TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
 ADMIN_ID = int(os.getenv("ADMIN_ID", "0"))
@@ -35,9 +35,9 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DATABASE_PATH = os.path.join(BASE_DIR, "bot.db")
 
 
-# =========================
+# =========================================================
 # LOGGING
-# =========================
+# =========================================================
 
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
@@ -47,9 +47,9 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
-# =========================
-# BUTTONS
-# =========================
+# =========================================================
+# MAIN BUTTONS
+# =========================================================
 
 BTN_SERVICES = "🔧 Хизматлар"
 BTN_WORKER = "👨‍🔧 Уста чақириш"
@@ -60,9 +60,9 @@ BTN_BACK = "⬅️ Орқага"
 BTN_REGISTER_WORKER = "👨‍🔧 Уста бўлиб рўйхатдан ўтиш"
 
 
-# =========================
+# =========================================================
 # SERVICES
-# =========================
+# =========================================================
 
 SERVICES = [
     "🔧 Сантехник",
@@ -74,9 +74,9 @@ SERVICES = [
 ]
 
 
-# =========================
-# CONVERSATION STATES
-# =========================
+# =========================================================
+# STATES
+# =========================================================
 
 CUSTOMER_NAME = 0
 CUSTOMER_PHONE = 1
@@ -97,9 +97,9 @@ ANNOUNCEMENT_BUDGET = 24
 ANNOUNCEMENT_DETAILS = 25
 
 
-# =========================
+# =========================================================
 # DATABASE
-# =========================
+# =========================================================
 
 def get_connection():
     conn = sqlite3.connect(DATABASE_PATH, timeout=30)
@@ -111,8 +111,7 @@ def init_db():
     conn = get_connection()
     cur = conn.cursor()
 
-    cur.execute(
-        """
+    cur.execute("""
         CREATE TABLE IF NOT EXISTS workers (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             telegram_id INTEGER NOT NULL,
@@ -123,11 +122,9 @@ def init_db():
             price TEXT NOT NULL,
             created_at TEXT NOT NULL
         )
-        """
-    )
+    """)
 
-    cur.execute(
-        """
+    cur.execute("""
         CREATE TABLE IF NOT EXISTS orders (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             telegram_id INTEGER NOT NULL,
@@ -142,11 +139,9 @@ def init_db():
             created_at TEXT NOT NULL,
             accepted_at TEXT
         )
-        """
-    )
+    """)
 
-    cur.execute(
-        """
+    cur.execute("""
         CREATE TABLE IF NOT EXISTS announcements (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             telegram_id INTEGER NOT NULL,
@@ -158,13 +153,11 @@ def init_db():
             details TEXT NOT NULL,
             created_at TEXT NOT NULL
         )
-        """
-    )
+    """)
 
     conn.commit()
 
-    # Existing databases may not have the new order columns.
-    # Add them safely if necessary.
+    # Эски базалар учун янги устунларни қўшиш
     columns = {
         row["name"]
         for row in cur.execute("PRAGMA table_info(orders)").fetchall()
@@ -194,9 +187,9 @@ def init_db():
     conn.close()
 
 
-# =========================
-# TEXT NORMALIZATION
-# =========================
+# =========================================================
+# NORMALIZATION
+# =========================================================
 
 def normalize_text(text):
     if not text:
@@ -222,16 +215,7 @@ def normalize_text(text):
 def normalize_service_name(text):
     text = normalize_text(text)
 
-    emoji_chars = [
-        "🔧",
-        "⚡",
-        "📱",
-        "💻",
-        "🧹",
-        "🪑",
-    ]
-
-    for emoji in emoji_chars:
+    for emoji in ["🔧", "⚡", "📱", "💻", "🧹", "🪑"]:
         text = text.replace(emoji, "")
 
     text = text.strip()
@@ -260,9 +244,9 @@ def normalize_service_name(text):
     return aliases.get(text, text)
 
 
-# =========================
+# =========================================================
 # KEYBOARDS
-# =========================
+# =========================================================
 
 def main_keyboard():
     return ReplyKeyboardMarkup(
@@ -320,11 +304,13 @@ def accept_order_keyboard(order_id):
     )
 
 
-# =========================
-# BASIC MENUS
-# =========================
+# =========================================================
+# START / HELP / CONTACT
+# =========================================================
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    # Энг муҳим тузатиш:
+    # /start ҳар доим жорий жараён маълумотларини тозалайди.
     context.user_data.clear()
 
     await update.message.reply_text(
@@ -333,14 +319,16 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         reply_markup=main_keyboard(),
     )
 
+    return ConversationHandler.END
+
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "🛠 Osh Service ёрдам\n\n"
         "🔧 Хизматлар — хизмат танлаш\n"
         "👨‍🔧 Уста чақириш — уста сифатида рўйхатдан ўтиш\n"
-        "📢 Эълон бериш — хизмат учун эълон қолдириш\n\n"
-        "Саволлар бўлса, «Алоқа» бўлими орқали мурожаат қилинг."
+        "📢 Эълон бериш — эълон қолдириш\n"
+        "Алоқа — администратор билан боғланиш"
     )
 
 
@@ -352,6 +340,10 @@ async def contact(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 
+# =========================================================
+# SERVICES
+# =========================================================
+
 async def services_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "🔧 Қайси хизмат керак?",
@@ -359,7 +351,14 @@ async def services_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 
+# =========================================================
+# WORKER MENU
+# =========================================================
+
 async def worker_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    # Эски жараён маълумотларини тозалаш
+    context.user_data.clear()
+
     await update.message.reply_text(
         "👨‍🔧 Уста чақириш бўлими\n\n"
         "Агар сиз хизмат кўрсатувчи уста бўлсангиз, "
@@ -368,9 +367,9 @@ async def worker_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 
-# =========================
+# =========================================================
 # CUSTOMER ORDER
-# =========================
+# =========================================================
 
 async def service_selected(update: Update, context: ContextTypes.DEFAULT_TYPE):
     service = update.message.text.strip()
@@ -392,7 +391,6 @@ async def service_selected(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
 
         await update.message.reply_text(text.strip())
-
     else:
         await update.message.reply_text(
             "😔 Ҳозирча бу хизмат бўйича "
@@ -453,15 +451,15 @@ async def customer_problem(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     order_text = (
         "🔔 ЯНГИ БУЮРТМА!\n\n"
+        f"🆔 Буюртма №: {order_id}\n"
         f"🔧 Хизмат: {context.user_data['service']}\n"
         f"👤 Исм: {context.user_data['name']}\n"
         f"📞 Телефон: {context.user_data['phone']}\n"
         f"📍 Манзил: {context.user_data['address']}\n"
-        f"📝 Муаммо: {context.user_data['problem']}\n"
-        f"🆔 Буюртма №: {order_id}"
+        f"📝 Муаммо: {context.user_data['problem']}"
     )
 
-    # Admin notification
+    # Админга
     if ADMIN_ID:
         try:
             await context.bot.send_message(
@@ -469,9 +467,9 @@ async def customer_problem(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 text=order_text,
             )
         except Exception:
-            logger.exception("Could not notify admin about order")
+            logger.exception("Admin notification failed")
 
-    # Matching workers
+    # Мос усталарга
     workers = get_matching_workers(
         context.user_data["service"]
     )
@@ -499,7 +497,7 @@ async def customer_problem(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         except Exception:
             logger.exception(
-                "Could not notify worker %s",
+                "Worker notification failed: %s",
                 worker["telegram_id"],
             )
 
@@ -515,9 +513,9 @@ async def customer_problem(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return ConversationHandler.END
 
 
-# =========================
+# =========================================================
 # WORKER REGISTRATION
-# =========================
+# =========================================================
 
 async def worker_register_start(
     update: Update,
@@ -605,7 +603,7 @@ async def worker_price(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 text=worker_text,
             )
         except Exception:
-            logger.exception("Could not notify admin about worker")
+            logger.exception("Worker admin notification failed")
 
     await update.message.reply_text(
         worker_text
@@ -623,9 +621,9 @@ async def worker_price(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return ConversationHandler.END
 
 
-# =========================
-# ANNOUNCEMENTS
-# =========================
+# =========================================================
+# ANNOUNCEMENT
+# =========================================================
 
 async def announcement_start(
     update: Update,
@@ -666,3 +664,965 @@ async def announcement_phone(
     )
 
     return ANNOUNCEMENT_SERVICE
+
+
+async def announcement_service(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+):
+    context.user_data["announcement_service"] = update.message.text.strip()
+
+    await update.message.reply_text(
+        "📍 Манзилингизни ёзинг:"
+    )
+
+    return ANNOUNCEMENT_ADDRESS
+
+
+async def announcement_address(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+):
+    context.user_data["announcement_address"] = update.message.text.strip()
+
+    await update.message.reply_text(
+        "💰 Бюджетингизни ёзинг.\n\n"
+        "Масалан: 1000 сомгача"
+    )
+
+    return ANNOUNCEMENT_BUDGET
+
+
+async def announcement_budget(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+):
+    context.user_data["announcement_budget"] = update.message.text.strip()
+
+    await update.message.reply_text(
+        "📝 Қўшимча маълумот ёзинг:"
+    )
+
+    return ANNOUNCEMENT_DETAILS
+
+
+async def announcement_details(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+):
+    context.user_data["announcement_details"] = update.message.text.strip()
+
+    user = update.effective_user
+
+    announcement_id = save_announcement(
+        telegram_id=user.id,
+        name=context.user_data["announcement_name"],
+        phone=context.user_data["announcement_phone"],
+        service=context.user_data["announcement_service"],
+        address=context.user_data["announcement_address"],
+        budget=context.user_data["announcement_budget"],
+        details=context.user_data["announcement_details"],
+    )
+
+    announcement_text = (
+        "📢 ЯНГИ ЭЪЛОН!\n\n"
+        f"🆔 Эълон №: {announcement_id}\n"
+        f"👤 Исм: {context.user_data['announcement_name']}\n"
+        f"📞 Телефон: {context.user_data['announcement_phone']}\n"
+        f"🔧 Хизмат: {context.user_data['announcement_service']}\n"
+        f"📍 Манзил: {context.user_data['announcement_address']}\n"
+        f"💰 Бюджет: {context.user_data['announcement_budget']}\n"
+        f"📝 Маълумот: {context.user_data['announcement_details']}"
+    )
+
+    if ADMIN_ID:
+        try:
+            await context.bot.send_message(
+                chat_id=ADMIN_ID,
+                text=announcement_text,
+            )
+        except Exception:
+            logger.exception("Announcement notification failed")
+
+    await update.message.reply_text(
+        "✅ Эълонингиз қабул қилинди!\n\n"
+        "Администраторга юборилди.",
+        reply_markup=main_keyboard(),
+    )
+
+    context.user_data.clear()
+
+    return ConversationHandler.END
+
+
+# =========================================================
+# ACCEPT ORDER
+# =========================================================
+
+async def accept_order(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+):
+    query = update.callback_query
+
+    await query.answer()
+
+    try:
+        order_id = int(
+            query.data.split(":")[1]
+        )
+    except (ValueError, IndexError):
+        await query.answer(
+            "Буюртма рақами нотўғри.",
+            show_alert=True,
+        )
+        return
+
+    worker_telegram_id = query.from_user.id
+
+    worker = get_worker_by_telegram_id(
+        worker_telegram_id
+    )
+
+    if not worker:
+        await query.answer(
+            "Сиз уста сифатида рўйхатдан ўтмагансиз.",
+            show_alert=True,
+        )
+        return
+
+    order = get_order(order_id)
+
+    if not order:
+        await query.answer(
+            "Бундай буюртма топилмади.",
+            show_alert=True,
+        )
+        return
+
+    accepted = accept_order_in_db(
+        order_id=order_id,
+        worker_id=worker["id"],
+        worker_name=worker["name"],
+    )
+
+    if not accepted:
+        await query.answer(
+            "Бу буюртма аллақачон қабул қилинган.",
+            show_alert=True,
+        )
+        return
+
+    try:
+        await query.edit_message_text(
+            query.message.text
+            + "\n\n"
+            "✅ СИЗ БУЮРТМАНИ ҚАБУЛ ҚИЛДИНГИЗ!"
+        )
+    except Exception:
+        logger.exception("Could not edit worker message")
+
+    # Мижозга
+    try:
+        await context.bot.send_message(
+            chat_id=order["telegram_id"],
+            text=(
+                "✅ Буюртмангиз қабул қилинди!\n\n"
+                f"👨‍🔧 Уста: {worker['name']}\n"
+                f"🔧 Хизмат: {order['service']}\n"
+                f"📞 Уста телефони: {worker['phone']}\n"
+                f"📍 Уста ҳудуди: {worker['area']}\n"
+                f"💰 Нарх: {worker['price']}\n\n"
+                "Уста сиз билан телефон орқали боғланиши мумкин."
+            ),
+        )
+    except Exception:
+        logger.exception("Could not notify customer")
+
+    # Админга
+    if ADMIN_ID:
+        try:
+            await context.bot.send_message(
+                chat_id=ADMIN_ID,
+                text=(
+                    "✅ БУЮРТМА ҚАБУЛ ҚИЛИНДИ!\n\n"
+                    f"🆔 Буюртма №: {order_id}\n"
+                    f"👨‍🔧 Уста: {worker['name']}\n"
+                    f"📞 Уста: {worker['phone']}\n"
+                    f"🔧 Хизмат: {order['service']}\n"
+                    f"👤 Мижоз: {order['name']}\n"
+                    f"📞 Мижоз: {order['phone']}\n"
+                    f"📍 Манзил: {order['address']}\n"
+                    f"📝 Муаммо: {order['problem']}"
+                ),
+            )
+        except Exception:
+            logger.exception("Could not notify admin")
+
+
+# =========================================================
+# ADMIN
+# =========================================================
+
+async def admin_command(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+):
+    if update.effective_user.id != ADMIN_ID:
+        await update.message.reply_text(
+            "❌ Сизда админ ҳуқуқи йўқ."
+        )
+        return
+
+    keyboard = ReplyKeyboardMarkup(
+        [
+            ["👨‍🔧 Усталар", "📢 Эълонлар"],
+            ["🔔 Буюртмалар", "📊 Статистика"],
+            [BTN_BACK],
+        ],
+        resize_keyboard=True,
+    )
+
+    await update.message.reply_text(
+        "👨‍💼 Админ панел",
+        reply_markup=keyboard,
+    )
+
+
+async def admin_text(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+):
+    if update.effective_user.id != ADMIN_ID:
+        return
+
+    text = update.message.text
+
+    if text == "📊 Статистика":
+        stats = get_statistics()
+
+        await update.message.reply_text(
+            "📊 Статистика\n\n"
+            f"👨‍🔧 Усталар: {stats['workers']}\n"
+            f"📢 Эълонлар: {stats['announcements']}\n"
+            f"🔔 Буюртмалар: {stats['orders']}\n"
+            f"📦 Жами: {stats['total']}"
+        )
+
+    elif text == "👨‍🔧 Усталар":
+        workers = get_all_workers()
+
+        if not workers:
+            await update.message.reply_text(
+                "👨‍🔧 Ҳозирча усталар йўқ."
+            )
+            return
+
+        result = "👨‍🔧 Усталар:\n\n"
+
+        for worker in workers:
+            result += (
+                f"#{worker['id']} {worker['name']}\n"
+                f"🔧 {worker['service']}\n"
+                f"📍 {worker['area']}\n"
+                f"💰 {worker['price']}\n"
+                f"📞 {worker['phone']}\n\n"
+            )
+
+        await update.message.reply_text(result)
+
+    elif text == "📢 Эълонлар":
+        announcements = get_all_announcements()
+
+        if not announcements:
+            await update.message.reply_text(
+                "📢 Ҳозирча эълонлар йўқ."
+            )
+            return
+
+        result = "📢 Эълонлар:\n\n"
+
+        for item in announcements:
+            result += (
+                f"#{item['id']}\n"
+                f"👤 {item['name']}\n"
+                f"🔧 {item['service']}\n"
+                f"📍 {item['address']}\n"
+                f"💰 {item['budget']}\n"
+                f"📝 {item['details']}\n\n"
+            )
+
+        await update.message.reply_text(result)
+
+    elif text == "🔔 Буюртмалар":
+        orders = get_all_orders()
+
+        if not orders:
+            await update.message.reply_text(
+                "🔔 Ҳозирча буюртмалар йўқ."
+            )
+            return
+
+        result = "🔔 Буюртмалар:\n\n"
+
+        for order in orders:
+
+            if order["status"] == "accepted":
+                status_text = (
+                    "✅ Қабул қилинган: "
+                    f"{order['accepted_worker_name']}"
+                )
+            else:
+                status_text = "⏳ Кутилмоқда"
+
+            result += (
+                f"#{order['id']} — {status_text}\n"
+                f"🔧 {order['service']}\n"
+                f"👤 {order['name']}\n"
+                f"📞 {order['phone']}\n"
+                f"📍 {order['address']}\n"
+                f"📝 {order['problem']}\n\n"
+            )
+
+        await update.message.reply_text(result)
+
+
+# =========================================================
+# DATABASE FUNCTIONS
+# =========================================================
+
+def save_worker(
+    telegram_id,
+    name,
+    phone,
+    service,
+    area,
+    price,
+):
+    conn = get_connection()
+
+    conn.execute(
+        """
+        INSERT INTO workers
+        (
+            telegram_id,
+            name,
+            phone,
+            service,
+            area,
+            price,
+            created_at
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            telegram_id,
+            name,
+            phone,
+            service,
+            area,
+            price,
+            datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        ),
+    )
+
+    conn.commit()
+    conn.close()
+
+
+def save_order(
+    telegram_id,
+    name,
+    phone,
+    service,
+    address,
+    problem,
+):
+    conn = get_connection()
+
+    cur = conn.execute(
+        """
+        INSERT INTO orders
+        (
+            telegram_id,
+            name,
+            phone,
+            service,
+            address,
+            problem,
+            status,
+            created_at
+        )
+        VALUES (?, ?, ?, ?, ?, ?, 'pending', ?)
+        """,
+        (
+            telegram_id,
+            name,
+            phone,
+            service,
+            address,
+            problem,
+            datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        ),
+    )
+
+    order_id = cur.lastrowid
+
+    conn.commit()
+    conn.close()
+
+    return order_id
+
+
+def save_announcement(
+    telegram_id,
+    name,
+    phone,
+    service,
+    address,
+    budget,
+    details,
+):
+    conn = get_connection()
+
+    cur = conn.execute(
+        """
+        INSERT INTO announcements
+        (
+            telegram_id,
+            name,
+            phone,
+            service,
+            address,
+            budget,
+            details,
+            created_at
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            telegram_id,
+            name,
+            phone,
+            service,
+            address,
+            budget,
+            details,
+            datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        ),
+    )
+
+    announcement_id = cur.lastrowid
+
+    conn.commit()
+    conn.close()
+
+    return announcement_id
+
+
+def get_matching_workers(service):
+    wanted = normalize_service_name(service)
+
+    conn = get_connection()
+
+    rows = conn.execute(
+        "SELECT * FROM workers ORDER BY id DESC"
+    ).fetchall()
+
+    conn.close()
+
+    result = []
+
+    for worker in rows:
+        worker_service = normalize_service_name(
+            worker["service"]
+        )
+
+        if wanted == worker_service:
+            result.append(worker)
+
+    return result
+
+
+def get_worker_by_telegram_id(telegram_id):
+    conn = get_connection()
+
+    row = conn.execute(
+        """
+        SELECT *
+        FROM workers
+        WHERE telegram_id = ?
+        ORDER BY id DESC
+        LIMIT 1
+        """,
+        (telegram_id,),
+    ).fetchone()
+
+    conn.close()
+
+    return row
+
+
+def get_order(order_id):
+    conn = get_connection()
+
+    row = conn.execute(
+        """
+        SELECT *
+        FROM orders
+        WHERE id = ?
+        """,
+        (order_id,),
+    ).fetchone()
+
+    conn.close()
+
+    return row
+
+
+def accept_order_in_db(
+    order_id,
+    worker_id,
+    worker_name,
+):
+    conn = get_connection()
+
+    accepted_at = datetime.now().strftime(
+        "%Y-%m-%d %H:%M:%S"
+    )
+
+    cur = conn.execute(
+        """
+        UPDATE orders
+        SET
+            status = 'accepted',
+            accepted_worker_id = ?,
+            accepted_worker_name = ?,
+            accepted_at = ?
+        WHERE
+            id = ?
+            AND status = 'pending'
+        """,
+        (
+            worker_id,
+            worker_name,
+            accepted_at,
+            order_id,
+        ),
+    )
+
+    conn.commit()
+
+    changed = cur.rowcount > 0
+
+    conn.close()
+
+    return changed
+
+
+def get_statistics():
+    conn = get_connection()
+
+    workers = conn.execute(
+        "SELECT COUNT(*) AS count FROM workers"
+    ).fetchone()["count"]
+
+    announcements = conn.execute(
+        "SELECT COUNT(*) AS count FROM announcements"
+    ).fetchone()["count"]
+
+    orders = conn.execute(
+        "SELECT COUNT(*) AS count FROM orders"
+    ).fetchone()["count"]
+
+    conn.close()
+
+    return {
+        "workers": workers,
+        "announcements": announcements,
+        "orders": orders,
+        "total": workers + announcements + orders,
+    }
+
+
+def get_all_workers():
+    conn = get_connection()
+
+    rows = conn.execute(
+        "SELECT * FROM workers ORDER BY id DESC"
+    ).fetchall()
+
+    conn.close()
+
+    return rows
+
+
+def get_all_announcements():
+    conn = get_connection()
+
+    rows = conn.execute(
+        "SELECT * FROM announcements ORDER BY id DESC"
+    ).fetchall()
+
+    conn.close()
+
+    return rows
+
+
+def get_all_orders():
+    conn = get_connection()
+
+    rows = conn.execute(
+        "SELECT * FROM orders ORDER BY id DESC"
+    ).fetchall()
+
+    conn.close()
+
+    return rows
+
+
+# =========================================================
+# CUSTOMER CONVERSATION
+# =========================================================
+
+customer_conversation = ConversationHandler(
+    entry_points=[
+        MessageHandler(
+            filters.TEXT
+            & filters.Regex(
+                "^🔧 (Сантехник|Электрик|Телефон таъмири|"
+                "Компьютер таъмири|Уй тозалаш|Мебель таъмири)$"
+            ),
+            service_selected,
+        )
+    ],
+
+    states={
+        CUSTOMER_NAME: [
+            MessageHandler(
+                filters.TEXT & ~filters.COMMAND,
+                customer_name,
+            )
+        ],
+
+        CUSTOMER_PHONE: [
+            MessageHandler(
+                filters.TEXT & ~filters.COMMAND,
+                customer_phone,
+            )
+        ],
+
+        CUSTOMER_ADDRESS: [
+            MessageHandler(
+                filters.TEXT & ~filters.COMMAND,
+                customer_address,
+            )
+        ],
+
+        CUSTOMER_PROBLEM: [
+            MessageHandler(
+                filters.TEXT & ~filters.COMMAND,
+                customer_problem,
+            )
+        ],
+    },
+
+    fallbacks=[
+        # ЭНГ МУҲИМ:
+        # /start босилса, эски conversation тугайди.
+        CommandHandler("start", start),
+
+        MessageHandler(
+            filters.Regex(f"^{BTN_BACK}$"),
+            start,
+        ),
+    ],
+
+    allow_reentry=True,
+)
+
+
+# =========================================================
+# WORKER CONVERSATION
+# =========================================================
+
+worker_conversation = ConversationHandler(
+    entry_points=[
+        MessageHandler(
+            filters.Regex(
+                f"^{BTN_REGISTER_WORKER}$"
+            ),
+            worker_register_start,
+        )
+    ],
+
+    states={
+        WORKER_NAME: [
+            MessageHandler(
+                filters.TEXT & ~filters.COMMAND,
+                worker_name,
+            )
+        ],
+
+        WORKER_PHONE: [
+            MessageHandler(
+                filters.TEXT & ~filters.COMMAND,
+                worker_phone,
+            )
+        ],
+
+        WORKER_SERVICE: [
+            MessageHandler(
+                filters.TEXT & ~filters.COMMAND,
+                worker_service,
+            )
+        ],
+
+        WORKER_AREA: [
+            MessageHandler(
+                filters.TEXT & ~filters.COMMAND,
+                worker_area,
+            )
+        ],
+
+        WORKER_PRICE: [
+            MessageHandler(
+                filters.TEXT & ~filters.COMMAND,
+                worker_price,
+            )
+        ],
+    },
+
+    fallbacks=[
+        # /start -> эски рўйхатдан ўтиш жараёни тугайди
+        CommandHandler("start", start),
+
+        MessageHandler(
+            filters.Regex(f"^{BTN_BACK}$"),
+            start,
+        ),
+    ],
+
+    allow_reentry=True,
+)
+
+
+# =========================================================
+# ANNOUNCEMENT CONVERSATION
+# =========================================================
+
+announcement_conversation = ConversationHandler(
+    entry_points=[
+        MessageHandler(
+            filters.Regex(
+                f"^{BTN_ANNOUNCEMENT}$"
+            ),
+            announcement_start,
+        )
+    ],
+
+    states={
+        ANNOUNCEMENT_NAME: [
+            MessageHandler(
+                filters.TEXT & ~filters.COMMAND,
+                announcement_name,
+            )
+        ],
+
+        ANNOUNCEMENT_PHONE: [
+            MessageHandler(
+                filters.TEXT & ~filters.COMMAND,
+                announcement_phone,
+            )
+        ],
+
+        ANNOUNCEMENT_SERVICE: [
+            MessageHandler(
+                filters.TEXT & ~filters.COMMAND,
+                announcement_service,
+            )
+        ],
+
+        ANNOUNCEMENT_ADDRESS: [
+            MessageHandler(
+                filters.TEXT & ~filters.COMMAND,
+                announcement_address,
+            )
+        ],
+
+        ANNOUNCEMENT_BUDGET: [
+            MessageHandler(
+                filters.TEXT & ~filters.COMMAND,
+                announcement_budget,
+            )
+        ],
+
+        ANNOUNCEMENT_DETAILS: [
+            MessageHandler(
+                filters.TEXT & ~filters.COMMAND,
+                announcement_details,
+            )
+        ],
+    },
+
+    fallbacks=[
+        # /start -> эски эълон жараёни тугайди
+        CommandHandler("start", start),
+
+        MessageHandler(
+            filters.Regex(f"^{BTN_BACK}$"),
+            start,
+        ),
+    ],
+
+    allow_reentry=True,
+)
+
+
+# =========================================================
+# MAIN
+# =========================================================
+
+def main():
+
+    if not TOKEN:
+        raise RuntimeError(
+            "TELEGRAM_BOT_TOKEN environment variable is missing."
+        )
+
+    init_db()
+
+    application = (
+        Application.builder()
+        .token(TOKEN)
+        .build()
+    )
+
+    # -----------------------------------------------------
+    # Commands
+    # -----------------------------------------------------
+
+    application.add_handler(
+        CommandHandler("start", start)
+    )
+
+    application.add_handler(
+        CommandHandler("help", help_command)
+    )
+
+    application.add_handler(
+        CommandHandler("admin", admin_command)
+    )
+
+    # -----------------------------------------------------
+    # Order acceptance button
+    # -----------------------------------------------------
+
+    application.add_handler(
+        CallbackQueryHandler(
+            accept_order,
+            pattern=r"^accept_order:\d+$",
+        )
+    )
+
+    # -----------------------------------------------------
+    # Main menu
+    # -----------------------------------------------------
+
+    application.add_handler(
+        MessageHandler(
+            filters.Regex(f"^{BTN_SERVICES}$"),
+            services_menu,
+        )
+    )
+
+    application.add_handler(
+        MessageHandler(
+            filters.Regex(f"^{BTN_WORKER}$"),
+            worker_menu,
+        )
+    )
+
+    application.add_handler(
+        MessageHandler(
+            filters.Regex(f"^{BTN_CONTACT}$"),
+            contact,
+        )
+    )
+
+    # -----------------------------------------------------
+    # Conversations
+    # -----------------------------------------------------
+
+    application.add_handler(
+        customer_conversation
+    )
+
+    application.add_handler(
+        worker_conversation
+    )
+
+    application.add_handler(
+        announcement_conversation
+    )
+
+    # -----------------------------------------------------
+    # Back
+    # -----------------------------------------------------
+
+    application.add_handler(
+        MessageHandler(
+            filters.Regex(f"^{BTN_BACK}$"),
+            start,
+        )
+    )
+
+    # -----------------------------------------------------
+    # Admin text
+    # -----------------------------------------------------
+
+    application.add_handler(
+        MessageHandler(
+            filters.TEXT & ~filters.COMMAND,
+            admin_text,
+        )
+    )
+
+    # -----------------------------------------------------
+    # Render
+    # -----------------------------------------------------
+
+    if RENDER_EXTERNAL_URL:
+
+        webhook_url = (
+            f"{RENDER_EXTERNAL_URL.rstrip('/')}/telegram"
+        )
+
+        logger.info(
+            "Starting webhook on port %s",
+            PORT,
+        )
+
+        application.run_webhook(
+            listen="0.0.0.0",
+            port=PORT,
+            url_path="telegram",
+            webhook_url=webhook_url,
+            drop_pending_updates=True,
+        )
+
+    else:
+
+        logger.info("Starting polling")
+
+        application.run_polling(
+            drop_pending_updates=True
+        )
+
+
+# =========================================================
+# START BOT
+# =========================================================
+
+if __name__ == "__main__":
+    main()

@@ -58,6 +58,7 @@ BTN_CONTACT = "Алоқа"
 BTN_BACK = "⬅️ Орқага"
 
 BTN_REGISTER_WORKER = "👨‍🔧 Уста бўлиб рўйхатдан ўтиш"
+BTN_MY_PROFILE = "👤 Менинг профилим"
 
 
 # =========================================================
@@ -78,23 +79,33 @@ SERVICES = [
 # STATES
 # =========================================================
 
+# Customer
 CUSTOMER_NAME = 0
 CUSTOMER_PHONE = 1
 CUSTOMER_ADDRESS = 2
 CUSTOMER_PROBLEM = 3
 
+# Worker registration
 WORKER_NAME = 10
 WORKER_PHONE = 11
 WORKER_SERVICE = 12
 WORKER_AREA = 13
 WORKER_PRICE = 14
 
+# Announcement
 ANNOUNCEMENT_NAME = 20
 ANNOUNCEMENT_PHONE = 21
 ANNOUNCEMENT_SERVICE = 22
 ANNOUNCEMENT_ADDRESS = 23
 ANNOUNCEMENT_BUDGET = 24
 ANNOUNCEMENT_DETAILS = 25
+
+# Worker profile editing
+PROFILE_NAME = 30
+PROFILE_PHONE = 31
+PROFILE_SERVICE = 32
+PROFILE_AREA = 33
+PROFILE_PRICE = 34
 
 
 # =========================================================
@@ -157,30 +168,35 @@ def init_db():
 
     conn.commit()
 
-    # Эски базалар учун янги устунларни қўшиш
     columns = {
         row["name"]
-        for row in cur.execute("PRAGMA table_info(orders)").fetchall()
+        for row in cur.execute(
+            "PRAGMA table_info(orders)"
+        ).fetchall()
     }
 
     if "status" not in columns:
         cur.execute(
-            "ALTER TABLE orders ADD COLUMN status TEXT NOT NULL DEFAULT 'pending'"
+            "ALTER TABLE orders ADD COLUMN "
+            "status TEXT NOT NULL DEFAULT 'pending'"
         )
 
     if "accepted_worker_id" not in columns:
         cur.execute(
-            "ALTER TABLE orders ADD COLUMN accepted_worker_id INTEGER"
+            "ALTER TABLE orders ADD COLUMN "
+            "accepted_worker_id INTEGER"
         )
 
     if "accepted_worker_name" not in columns:
         cur.execute(
-            "ALTER TABLE orders ADD COLUMN accepted_worker_name TEXT"
+            "ALTER TABLE orders ADD COLUMN "
+            "accepted_worker_name TEXT"
         )
 
     if "accepted_at" not in columns:
         cur.execute(
-            "ALTER TABLE orders ADD COLUMN accepted_at TEXT"
+            "ALTER TABLE orders ADD COLUMN "
+            "accepted_at TEXT"
         )
 
     conn.commit()
@@ -276,9 +292,47 @@ def worker_keyboard():
     return ReplyKeyboardMarkup(
         [
             [BTN_REGISTER_WORKER],
+            [BTN_MY_PROFILE],
             [BTN_BACK],
         ],
         resize_keyboard=True,
+    )
+
+
+def profile_keyboard():
+    return InlineKeyboardMarkup(
+        [
+            [
+                InlineKeyboardButton(
+                    "✏️ Исмни ўзгартириш",
+                    callback_data="profile_edit:name",
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    "📞 Телефонни ўзгартириш",
+                    callback_data="profile_edit:phone",
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    "🔧 Хизматни ўзгартириш",
+                    callback_data="profile_edit:service",
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    "📍 Ҳудудни ўзгартириш",
+                    callback_data="profile_edit:area",
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    "💰 Нархни ўзгартириш",
+                    callback_data="profile_edit:price",
+                )
+            ],
+        ]
     )
 
 
@@ -309,8 +363,6 @@ def accept_order_keyboard(order_id):
 # =========================================================
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    # Энг муҳим тузатиш:
-    # /start ҳар доим жорий жараён маълумотларини тозалайди.
     context.user_data.clear()
 
     await update.message.reply_text(
@@ -322,7 +374,10 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return ConversationHandler.END
 
 
-async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def help_command(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+):
     await update.message.reply_text(
         "🛠 Osh Service ёрдам\n\n"
         "🔧 Хизматлар — хизмат танлаш\n"
@@ -332,7 +387,10 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 
-async def contact(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def contact(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+):
     await update.message.reply_text(
         "📞 Алоқа\n\n"
         "Osh Service администратори билан боғланиш учун "
@@ -344,7 +402,10 @@ async def contact(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # SERVICES
 # =========================================================
 
-async def services_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def services_menu(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+):
     await update.message.reply_text(
         "🔧 Қайси хизмат керак?",
         reply_markup=services_keyboard(),
@@ -355,8 +416,10 @@ async def services_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # WORKER MENU
 # =========================================================
 
-async def worker_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    # Эски жараён маълумотларини тозалаш
+async def worker_menu(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+):
     context.user_data.clear()
 
     await update.message.reply_text(
@@ -371,7 +434,10 @@ async def worker_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # CUSTOMER ORDER
 # =========================================================
 
-async def service_selected(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def service_selected(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+):
     service = update.message.text.strip()
 
     context.user_data["service"] = service
@@ -381,7 +447,10 @@ async def service_selected(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if workers:
         text = "👨‍🔧 Мос усталар:\n\n"
 
-        for index, worker in enumerate(workers, start=1):
+        for index, worker in enumerate(
+            workers,
+            start=1,
+        ):
             text += (
                 f"#{index} {worker['name']}\n"
                 f"🔧 {worker['service']}\n"
@@ -390,7 +459,10 @@ async def service_selected(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 f"📞 {worker['phone']}\n\n"
             )
 
-        await update.message.reply_text(text.strip())
+        await update.message.reply_text(
+            text.strip()
+        )
+
     else:
         await update.message.reply_text(
             "😔 Ҳозирча бу хизмат бўйича "
@@ -405,7 +477,10 @@ async def service_selected(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return CUSTOMER_NAME
 
 
-async def customer_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def customer_name(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+):
     context.user_data["name"] = update.message.text.strip()
 
     await update.message.reply_text(
@@ -415,7 +490,10 @@ async def customer_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return CUSTOMER_PHONE
 
 
-async def customer_phone(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def customer_phone(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+):
     context.user_data["phone"] = update.message.text.strip()
 
     await update.message.reply_text(
@@ -425,17 +503,24 @@ async def customer_phone(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return CUSTOMER_ADDRESS
 
 
-async def customer_address(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def customer_address(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+):
     context.user_data["address"] = update.message.text.strip()
 
     await update.message.reply_text(
-        "📝 Муаммони ёки сизга керак бўлган хизматни ёзинг:"
+        "📝 Муаммони ёки сизга керак бўлган "
+        "хизматни ёзинг:"
     )
 
     return CUSTOMER_PROBLEM
 
 
-async def customer_problem(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def customer_problem(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+):
     context.user_data["problem"] = update.message.text.strip()
 
     user = update.effective_user
@@ -459,7 +544,6 @@ async def customer_problem(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"📝 Муаммо: {context.user_data['problem']}"
     )
 
-    # Админга
     if ADMIN_ID:
         try:
             await context.bot.send_message(
@@ -467,9 +551,10 @@ async def customer_problem(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 text=order_text,
             )
         except Exception:
-            logger.exception("Admin notification failed")
+            logger.exception(
+                "Admin notification failed"
+            )
 
-    # Мос усталарга
     workers = get_matching_workers(
         context.user_data["service"]
     )
@@ -488,9 +573,12 @@ async def customer_problem(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     f"📞 Телефон: {context.user_data['phone']}\n"
                     f"📍 Манзил: {context.user_data['address']}\n"
                     f"📝 Муаммо: {context.user_data['problem']}\n\n"
-                    "Мижоз билан телефон орқали боғланишингиз мумкин."
+                    "Мижоз билан телефон орқали "
+                    "боғланишингиз мумкин."
                 ),
-                reply_markup=accept_order_keyboard(order_id),
+                reply_markup=accept_order_keyboard(
+                    order_id
+                ),
             )
 
             notified_count += 1
@@ -530,8 +618,13 @@ async def worker_register_start(
     return WORKER_NAME
 
 
-async def worker_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    context.user_data["worker_name"] = update.message.text.strip()
+async def worker_name(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+):
+    context.user_data["worker_name"] = (
+        update.message.text.strip()
+    )
 
     await update.message.reply_text(
         "📞 Телефон рақамингизни ёзинг:"
@@ -540,19 +633,30 @@ async def worker_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return WORKER_PHONE
 
 
-async def worker_phone(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    context.user_data["worker_phone"] = update.message.text.strip()
+async def worker_phone(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+):
+    context.user_data["worker_phone"] = (
+        update.message.text.strip()
+    )
 
     await update.message.reply_text(
         "🔧 Қайси хизматни қиласиз?\n\n"
-        "Масалан: сантехник, электрик, телефон таъмири"
+        "Масалан: сантехник, электрик, "
+        "телефон таъмири"
     )
 
     return WORKER_SERVICE
 
 
-async def worker_service(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    context.user_data["worker_service"] = update.message.text.strip()
+async def worker_service(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+):
+    context.user_data["worker_service"] = (
+        update.message.text.strip()
+    )
 
     await update.message.reply_text(
         "📍 Қайси ҳудудда ишлайсиз?\n\n"
@@ -562,8 +666,13 @@ async def worker_service(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return WORKER_AREA
 
 
-async def worker_area(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    context.user_data["worker_area"] = update.message.text.strip()
+async def worker_area(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+):
+    context.user_data["worker_area"] = (
+        update.message.text.strip()
+    )
 
     await update.message.reply_text(
         "💰 Хизмат нархингизни ёзинг.\n\n"
@@ -573,8 +682,13 @@ async def worker_area(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return WORKER_PRICE
 
 
-async def worker_price(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    context.user_data["worker_price"] = update.message.text.strip()
+async def worker_price(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+):
+    context.user_data["worker_price"] = (
+        update.message.text.strip()
+    )
 
     user = update.effective_user
 
@@ -603,7 +717,9 @@ async def worker_price(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 text=worker_text,
             )
         except Exception:
-            logger.exception("Worker admin notification failed")
+            logger.exception(
+                "Worker admin notification failed"
+            )
 
     await update.message.reply_text(
         worker_text
@@ -614,6 +730,187 @@ async def worker_price(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "Кейин мос буюртма келганда сизга "
         "Telegram орқали хабар юборилади.",
         reply_markup=main_keyboard(),
+    )
+
+    context.user_data.clear()
+
+    return ConversationHandler.END
+
+
+# =========================================================
+# WORKER PROFILE
+# =========================================================
+
+async def my_profile(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+):
+    context.user_data.clear()
+
+    worker = get_worker_by_telegram_id(
+        update.effective_user.id
+    )
+
+    if not worker:
+        await update.message.reply_text(
+            "😔 Сиз ҳали уста сифатида "
+            "рўйхатдан ўтмагансиз.\n\n"
+            "Аввал «👨‍🔧 Уста бўлиб рўйхатдан "
+            "ўтиш» тугмасини босинг.",
+            reply_markup=worker_keyboard(),
+        )
+        return
+
+    await update.message.reply_text(
+        "👤 МЕНИНГ ПРОФИЛИМ\n\n"
+        f"👤 Исм: {worker['name']}\n"
+        f"📞 Телефон: {worker['phone']}\n"
+        f"🔧 Хизмат: {worker['service']}\n"
+        f"📍 Ҳудуд: {worker['area']}\n"
+        f"💰 Нарх: {worker['price']}\n\n"
+        "Ўзгартириш учун керакли тугмани танланг:",
+        reply_markup=profile_keyboard(),
+    )
+
+
+async def profile_edit_start(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+):
+    query = update.callback_query
+    await query.answer()
+
+    worker = get_worker_by_telegram_id(
+        query.from_user.id
+    )
+
+    if not worker:
+        await query.message.reply_text(
+            "😔 Профилингиз топилмади."
+        )
+        return ConversationHandler.END
+
+    field = query.data.split(":")[1]
+    context.user_data["profile_field"] = field
+
+    prompts = {
+        "name": "👤 Янги исм ва фамилиянгизни ёзинг:",
+        "phone": "📞 Янги телефон рақамингизни ёзинг:",
+        "service": (
+            "🔧 Янги хизматингизни ёзинг:\n\n"
+            "Масалан: сантехник"
+        ),
+        "area": (
+            "📍 Янги ҳудудингизни ёзинг:\n\n"
+            "Масалан: Ош шаҳри"
+        ),
+        "price": (
+            "💰 Янги хизмат нархингизни ёзинг:\n\n"
+            "Масалан: 500 сомдан бошланади"
+        ),
+    }
+
+    await query.message.reply_text(
+        prompts.get(
+            field,
+            "Янги маълумотни ёзинг:",
+        )
+    )
+
+    state_map = {
+        "name": PROFILE_NAME,
+        "phone": PROFILE_PHONE,
+        "service": PROFILE_SERVICE,
+        "area": PROFILE_AREA,
+        "price": PROFILE_PRICE,
+    }
+
+    return state_map[field]
+
+
+async def profile_name(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+):
+    return await save_profile_field(
+        update,
+        context,
+        "name",
+    )
+
+
+async def profile_phone(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+):
+    return await save_profile_field(
+        update,
+        context,
+        "phone",
+    )
+
+
+async def profile_service(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+):
+    return await save_profile_field(
+        update,
+        context,
+        "service",
+    )
+
+
+async def profile_area(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+):
+    return await save_profile_field(
+        update,
+        context,
+        "area",
+    )
+
+
+async def profile_price(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+):
+    return await save_profile_field(
+        update,
+        context,
+        "price",
+    )
+
+
+async def save_profile_field(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    field,
+):
+    value = update.message.text.strip()
+
+    worker = get_worker_by_telegram_id(
+        update.effective_user.id
+    )
+
+    if not worker:
+        await update.message.reply_text(
+            "😔 Профилингиз топилмади.",
+            reply_markup=worker_keyboard(),
+        )
+        context.user_data.clear()
+        return ConversationHandler.END
+
+    update_worker_field(
+        worker["id"],
+        field,
+        value,
+    )
+
+    await update.message.reply_text(
+        "✅ Маълумотингиз янгиланди!",
+        reply_markup=worker_keyboard(),
     )
 
     context.user_data.clear()
@@ -644,7 +941,9 @@ async def announcement_name(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE,
 ):
-    context.user_data["announcement_name"] = update.message.text.strip()
+    context.user_data["announcement_name"] = (
+        update.message.text.strip()
+    )
 
     await update.message.reply_text(
         "📞 Телефон рақамингизни ёзинг:"
@@ -657,7 +956,9 @@ async def announcement_phone(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE,
 ):
-    context.user_data["announcement_phone"] = update.message.text.strip()
+    context.user_data["announcement_phone"] = (
+        update.message.text.strip()
+    )
 
     await update.message.reply_text(
         "🔧 Қайси хизмат керак?"
@@ -670,7 +971,9 @@ async def announcement_service(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE,
 ):
-    context.user_data["announcement_service"] = update.message.text.strip()
+    context.user_data["announcement_service"] = (
+        update.message.text.strip()
+    )
 
     await update.message.reply_text(
         "📍 Манзилингизни ёзинг:"
@@ -683,7 +986,9 @@ async def announcement_address(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE,
 ):
-    context.user_data["announcement_address"] = update.message.text.strip()
+    context.user_data["announcement_address"] = (
+        update.message.text.strip()
+    )
 
     await update.message.reply_text(
         "💰 Бюджетингизни ёзинг.\n\n"
@@ -697,7 +1002,9 @@ async def announcement_budget(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE,
 ):
-    context.user_data["announcement_budget"] = update.message.text.strip()
+    context.user_data["announcement_budget"] = (
+        update.message.text.strip()
+    )
 
     await update.message.reply_text(
         "📝 Қўшимча маълумот ёзинг:"
@@ -710,7 +1017,9 @@ async def announcement_details(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE,
 ):
-    context.user_data["announcement_details"] = update.message.text.strip()
+    context.user_data["announcement_details"] = (
+        update.message.text.strip()
+    )
 
     user = update.effective_user
 
@@ -742,7 +1051,9 @@ async def announcement_details(
                 text=announcement_text,
             )
         except Exception:
-            logger.exception("Announcement notification failed")
+            logger.exception(
+                "Announcement notification failed"
+            )
 
     await update.message.reply_text(
         "✅ Эълонингиз қабул қилинди!\n\n"
@@ -820,9 +1131,10 @@ async def accept_order(
             "✅ СИЗ БУЮРТМАНИ ҚАБУЛ ҚИЛДИНГИЗ!"
         )
     except Exception:
-        logger.exception("Could not edit worker message")
+        logger.exception(
+            "Could not edit worker message"
+        )
 
-    # Мижозга
     try:
         await context.bot.send_message(
             chat_id=order["telegram_id"],
@@ -833,13 +1145,15 @@ async def accept_order(
                 f"📞 Уста телефони: {worker['phone']}\n"
                 f"📍 Уста ҳудуди: {worker['area']}\n"
                 f"💰 Нарх: {worker['price']}\n\n"
-                "Уста сиз билан телефон орқали боғланиши мумкин."
+                "Уста сиз билан телефон орқали "
+                "боғланиши мумкин."
             ),
         )
     except Exception:
-        logger.exception("Could not notify customer")
+        logger.exception(
+            "Could not notify customer"
+        )
 
-    # Админга
     if ADMIN_ID:
         try:
             await context.bot.send_message(
@@ -857,7 +1171,9 @@ async def accept_order(
                 ),
             )
         except Exception:
-            logger.exception("Could not notify admin")
+            logger.exception(
+                "Could not notify admin"
+            )
 
 
 # =========================================================
@@ -1022,7 +1338,9 @@ def save_worker(
             service,
             area,
             price,
-            datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            datetime.now().strftime(
+                "%Y-%m-%d %H:%M:%S"
+            ),
         ),
     )
 
@@ -1062,7 +1380,9 @@ def save_order(
             service,
             address,
             problem,
-            datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            datetime.now().strftime(
+                "%Y-%m-%d %H:%M:%S"
+            ),
         ),
     )
 
@@ -1108,7 +1428,9 @@ def save_announcement(
             address,
             budget,
             details,
-            datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            datetime.now().strftime(
+                "%Y-%m-%d %H:%M:%S"
+            ),
         ),
     )
 
@@ -1161,6 +1483,41 @@ def get_worker_by_telegram_id(telegram_id):
     conn.close()
 
     return row
+
+
+def update_worker_field(
+    worker_id,
+    field,
+    value,
+):
+    allowed_fields = {
+        "name",
+        "phone",
+        "service",
+        "area",
+        "price",
+    }
+
+    if field not in allowed_fields:
+        return False
+
+    conn = get_connection()
+
+    query = f"""
+        UPDATE workers
+        SET {field} = ?
+        WHERE id = ?
+    """
+
+    conn.execute(
+        query,
+        (value, worker_id),
+    )
+
+    conn.commit()
+    conn.close()
+
+    return True
 
 
 def get_order(order_id):
@@ -1241,7 +1598,11 @@ def get_statistics():
         "workers": workers,
         "announcements": announcements,
         "orders": orders,
-        "total": workers + announcements + orders,
+        "total": (
+            workers
+            + announcements
+            + orders
+        ),
     }
 
 
@@ -1328,8 +1689,6 @@ customer_conversation = ConversationHandler(
     },
 
     fallbacks=[
-        # ЭНГ МУҲИМ:
-        # /start босилса, эски conversation тугайди.
         CommandHandler("start", start),
 
         MessageHandler(
@@ -1394,7 +1753,68 @@ worker_conversation = ConversationHandler(
     },
 
     fallbacks=[
-        # /start -> эски рўйхатдан ўтиш жараёни тугайди
+        CommandHandler("start", start),
+
+        MessageHandler(
+            filters.Regex(f"^{BTN_BACK}$"),
+            start,
+        ),
+    ],
+
+    allow_reentry=True,
+)
+
+
+# =========================================================
+# PROFILE CONVERSATION
+# =========================================================
+
+profile_conversation = ConversationHandler(
+    entry_points=[
+        CallbackQueryHandler(
+            profile_edit_start,
+            pattern=r"^profile_edit:"
+        )
+    ],
+
+    states={
+        PROFILE_NAME: [
+            MessageHandler(
+                filters.TEXT & ~filters.COMMAND,
+                profile_name,
+            )
+        ],
+
+        PROFILE_PHONE: [
+            MessageHandler(
+                filters.TEXT & ~filters.COMMAND,
+                profile_phone,
+            )
+        ],
+
+        PROFILE_SERVICE: [
+            MessageHandler(
+                filters.TEXT & ~filters.COMMAND,
+                profile_service,
+            )
+        ],
+
+        PROFILE_AREA: [
+            MessageHandler(
+                filters.TEXT & ~filters.COMMAND,
+                profile_area,
+            )
+        ],
+
+        PROFILE_PRICE: [
+            MessageHandler(
+                filters.TEXT & ~filters.COMMAND,
+                profile_price,
+            )
+        ],
+    },
+
+    fallbacks=[
         CommandHandler("start", start),
 
         MessageHandler(
@@ -1466,7 +1886,6 @@ announcement_conversation = ConversationHandler(
     },
 
     fallbacks=[
-        # /start -> эски эълон жараёни тугайди
         CommandHandler("start", start),
 
         MessageHandler(
@@ -1515,7 +1934,7 @@ def main():
     )
 
     # -----------------------------------------------------
-    # Order acceptance button
+    # Order acceptance
     # -----------------------------------------------------
 
     application.add_handler(
@@ -1551,6 +1970,17 @@ def main():
     )
 
     # -----------------------------------------------------
+    # Worker profile button
+    # -----------------------------------------------------
+
+    application.add_handler(
+        MessageHandler(
+            filters.Regex(f"^{BTN_MY_PROFILE}$"),
+            my_profile,
+        )
+    )
+
+    # -----------------------------------------------------
     # Conversations
     # -----------------------------------------------------
 
@@ -1560,6 +1990,10 @@ def main():
 
     application.add_handler(
         worker_conversation
+    )
+
+    application.add_handler(
+        profile_conversation
     )
 
     application.add_handler(

@@ -85,7 +85,7 @@ def normalize_service_name(text):
     text = re.sub(
         r"[🔧⚡📱💻🧹🪑👨‍🔧]",
         "",
-        text
+        text,
     )
 
     replacements = {
@@ -137,6 +137,81 @@ def normalize_service_name(text):
     return text.strip()
 
 
+def canonical_service(text):
+    """
+    Хизмат номини асосий категорияга келтиради.
+    """
+
+    normalized = normalize_service_name(text)
+
+    if not normalized:
+        return ""
+
+    # Компьютер таъмири вариантлари
+    if (
+        "kompyuter" in normalized
+        or "komyuter" in normalized
+        or "komputer" in normalized
+        or "komyuter" in normalized
+    ):
+        return "kompyuter"
+
+    # Сантехник вариантлари
+    if (
+        "santexnik" in normalized
+        or "santehnik" in normalized
+    ):
+        return "santexnik"
+
+    # Электрик
+    if "elektrik" in normalized:
+        return "elektrik"
+
+    # Телефон таъмири
+    if "telefon" in normalized:
+        return "telefon"
+
+    # Уй тозалаш
+    if (
+        "uy tozalash" in normalized
+        or "uy tozalash" in normalized
+        or "tozalash" in normalized
+    ):
+        return "tozalash"
+
+    # Мебель
+    if "mebel" in normalized:
+        return "mebel"
+
+    return normalized
+
+
+def service_matches(selected_service, worker_services):
+    """
+    Устанинг бир нечта хизмати бўлса ҳам,
+    танланган хизмат билан аниқ мослаштиради.
+    """
+
+    selected = canonical_service(selected_service)
+
+    if not selected or not worker_services:
+        return False
+
+    parts = re.split(
+        r"[,;/\n]+",
+        str(worker_services),
+    )
+
+    for part in parts:
+
+        worker_service = canonical_service(part)
+
+        if worker_service == selected:
+            return True
+
+    return False
+
+
 SERVICES = [
     "🔧 Сантехник",
     "⚡ Электрик",
@@ -179,10 +254,65 @@ def services_menu():
 
 
 # =========================
+# COMMON MENU / CANCEL
+# =========================
+
+MAIN_MENU_BUTTONS = [
+    "🔧 Хизматлар",
+    "👨‍🔧 Уста чақириш",
+    "📢 Эълон бериш",
+    "Алоқа",
+    "👤 Менинг профилим",
+    "⬅️ Бош меню",
+]
+
+
+MAIN_MENU_PATTERN = (
+    r"^(🔧 Хизматлар|👨‍🔧 Уста чақириш|📢 Эълон бериш|"
+    r"Алоқа|👤 Менинг профилим|⬅️ Бош меню)$"
+)
+
+
+async def cancel_to_main(update, context):
+    """
+    Форма ичида меню тугмаси босилса:
+    маълумот сақланмайди ва форма тугайди.
+    """
+
+    context.user_data.clear()
+
+    await update.message.reply_text(
+        "🛠 Керакли хизматни танланг:",
+        reply_markup=main_menu(),
+    )
+
+    return ConversationHandler.END
+
+
+async def cancel_command(update, context):
+    """
+    /cancel командаси.
+    """
+
+    context.user_data.clear()
+
+    await update.message.reply_text(
+        "❌ Амал бекор қилинди.\n\n"
+        "🛠 Керакли хизматни танланг:",
+        reply_markup=main_menu(),
+    )
+
+    return ConversationHandler.END
+
+
+# =========================
 # START
 # =========================
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+
+    context.user_data.clear()
+
     await update.message.reply_text(
         "🛠 Osh Service ботга хуш келибсиз!\n"
         "Керакли хизматни танланг:",
@@ -191,10 +321,12 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+
     await update.message.reply_text(
         "📌 Osh Service\n\n"
         "/start — бош меню\n"
         "/help — ёрдам\n"
+        "/cancel — жорий амални бекор қилиш\n"
         "/admin — админ панель\n"
         "/workers — усталар\n"
         "/orders — буюртмалар\n"
@@ -204,6 +336,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def services(update: Update, context: ContextTypes.DEFAULT_TYPE):
+
     await update.message.reply_text(
         "🔧 Қайси хизмат керак?",
         reply_markup=services_menu(),
@@ -219,11 +352,12 @@ NAME, PHONE, ADDRESS, PROBLEM = range(4)
 
 async def service_selected(
     update: Update,
-    context: ContextTypes.DEFAULT_TYPE
+    context: ContextTypes.DEFAULT_TYPE,
 ):
-    service = update.message.text
-    service_normalized = normalize_service_name(service)
 
+    service = update.message.text
+
+    context.user_data.clear()
     context.user_data["service"] = service
 
     workers = []
@@ -239,10 +373,12 @@ async def service_selected(
             rows = cur.fetchall()
 
             for row in rows:
+
                 worker_service = row[1]
 
-                if service_normalized in normalize_service_name(
-                    worker_service
+                if service_matches(
+                    service,
+                    worker_service,
                 ):
                     workers.append(row)
 
@@ -250,7 +386,7 @@ async def service_selected(
 
         message = "👨‍🔧 Мос усталар:\n\n"
 
-        for i, row in enumerate(workers, 1):
+        for i, row in enumerate(workers[:10], 1):
 
             name, worker_service, area, price, phone = row
 
@@ -280,7 +416,16 @@ async def service_selected(
 
 
 async def customer_name(update, context):
-    context.user_data["name"] = update.message.text
+
+    text = update.message.text.strip()
+
+    if not text:
+        await update.message.reply_text(
+            "❗ Исмингизни ёзинг:"
+        )
+        return NAME
+
+    context.user_data["name"] = text
 
     await update.message.reply_text(
         "📞 Телефон рақамингизни ёзинг:"
@@ -290,7 +435,19 @@ async def customer_name(update, context):
 
 
 async def customer_phone(update, context):
-    context.user_data["phone"] = update.message.text
+
+    phone = update.message.text.strip()
+
+    digits = re.sub(r"\D", "", phone)
+
+    if len(digits) < 7:
+        await update.message.reply_text(
+            "❗ Телефон рақами нотўғри.\n"
+            "Илтимос, телефон рақамингизни қайта ёзинг:"
+        )
+        return PHONE
+
+    context.user_data["phone"] = phone
 
     await update.message.reply_text(
         "📍 Манзилингизни ёзинг:"
@@ -300,7 +457,16 @@ async def customer_phone(update, context):
 
 
 async def customer_address(update, context):
-    context.user_data["address"] = update.message.text
+
+    text = update.message.text.strip()
+
+    if not text:
+        await update.message.reply_text(
+            "❗ Манзилингизни ёзинг:"
+        )
+        return ADDRESS
+
+    context.user_data["address"] = text
 
     await update.message.reply_text(
         "📝 Муаммони ёзинг:"
@@ -311,7 +477,15 @@ async def customer_address(update, context):
 
 async def customer_problem(update, context):
 
-    context.user_data["problem"] = update.message.text
+    problem = update.message.text.strip()
+
+    if not problem:
+        await update.message.reply_text(
+            "❗ Муаммони ёзинг:"
+        )
+        return PROBLEM
+
+    context.user_data["problem"] = problem
 
     user = update.effective_user
     data = context.user_data
@@ -362,6 +536,8 @@ WORKER_NAME, WORKER_PHONE, WORKER_SERVICE, WORKER_AREA, WORKER_PRICE = range(
 
 async def worker_start(update, context):
 
+    context.user_data.clear()
+
     await update.message.reply_text(
         "👨‍🔧 Уста бўлиб рўйхатдан ўтиш\n\n"
         "👤 Исм ва фамилиянгизни ёзинг:"
@@ -372,7 +548,15 @@ async def worker_start(update, context):
 
 async def worker_name(update, context):
 
-    context.user_data["worker_name"] = update.message.text
+    text = update.message.text.strip()
+
+    if not text:
+        await update.message.reply_text(
+            "❗ Исм ва фамилиянгизни ёзинг:"
+        )
+        return WORKER_NAME
+
+    context.user_data["worker_name"] = text
 
     await update.message.reply_text(
         "📞 Телефон рақамингизни ёзинг:"
@@ -383,7 +567,18 @@ async def worker_name(update, context):
 
 async def worker_phone(update, context):
 
-    context.user_data["worker_phone"] = update.message.text
+    phone = update.message.text.strip()
+
+    digits = re.sub(r"\D", "", phone)
+
+    if len(digits) < 7:
+        await update.message.reply_text(
+            "❗ Телефон рақами нотўғри.\n"
+            "Илтимос, телефон рақамингизни қайта ёзинг:"
+        )
+        return WORKER_PHONE
+
+    context.user_data["worker_phone"] = phone
 
     await update.message.reply_text(
         "🔧 Қайси хизматларни кўрсатасиз?\n\n"
@@ -396,7 +591,15 @@ async def worker_phone(update, context):
 
 async def worker_service(update, context):
 
-    context.user_data["worker_service"] = update.message.text
+    text = update.message.text.strip()
+
+    if not text:
+        await update.message.reply_text(
+            "❗ Хизматларингизни ёзинг:"
+        )
+        return WORKER_SERVICE
+
+    context.user_data["worker_service"] = text
 
     await update.message.reply_text(
         "📍 Қайси ҳудудда ишлайсиз?"
@@ -407,7 +610,15 @@ async def worker_service(update, context):
 
 async def worker_area(update, context):
 
-    context.user_data["worker_area"] = update.message.text
+    text = update.message.text.strip()
+
+    if not text:
+        await update.message.reply_text(
+            "❗ Ишлайдиган ҳудудингизни ёзинг:"
+        )
+        return WORKER_AREA
+
+    context.user_data["worker_area"] = text
 
     await update.message.reply_text(
         "💰 Хизмат нархини ёзинг:"
@@ -418,7 +629,15 @@ async def worker_area(update, context):
 
 async def worker_price(update, context):
 
-    context.user_data["worker_price"] = update.message.text
+    price = update.message.text.strip()
+
+    if not price:
+        await update.message.reply_text(
+            "❗ Хизмат нархини ёзинг:"
+        )
+        return WORKER_PRICE
+
+    context.user_data["worker_price"] = price
 
     user = update.effective_user
     data = context.user_data
@@ -469,6 +688,8 @@ ANN_NAME, ANN_PHONE, ANN_SERVICE, ANN_ADDRESS, ANN_BUDGET, ANN_DETAILS = range(
 
 async def announcement_start(update, context):
 
+    context.user_data.clear()
+
     await update.message.reply_text(
         "📢 Эълон бериш\n\n"
         "👤 Исмингизни ёзинг:"
@@ -479,7 +700,15 @@ async def announcement_start(update, context):
 
 async def ann_name(update, context):
 
-    context.user_data["ann_name"] = update.message.text
+    text = update.message.text.strip()
+
+    if not text:
+        await update.message.reply_text(
+            "❗ Исмингизни ёзинг:"
+        )
+        return ANN_NAME
+
+    context.user_data["ann_name"] = text
 
     await update.message.reply_text(
         "📞 Телефон рақамингизни ёзинг:"
@@ -490,7 +719,18 @@ async def ann_name(update, context):
 
 async def ann_phone(update, context):
 
-    context.user_data["ann_phone"] = update.message.text
+    phone = update.message.text.strip()
+
+    digits = re.sub(r"\D", "", phone)
+
+    if len(digits) < 7:
+        await update.message.reply_text(
+            "❗ Телефон рақами нотўғри.\n"
+            "Илтимос, телефон рақамингизни қайта ёзинг:"
+        )
+        return ANN_PHONE
+
+    context.user_data["ann_phone"] = phone
 
     await update.message.reply_text(
         "🔧 Қайси хизмат керак?"
@@ -501,7 +741,15 @@ async def ann_phone(update, context):
 
 async def ann_service(update, context):
 
-    context.user_data["ann_service"] = update.message.text
+    text = update.message.text.strip()
+
+    if not text:
+        await update.message.reply_text(
+            "❗ Қайси хизмат кераклигини ёзинг:"
+        )
+        return ANN_SERVICE
+
+    context.user_data["ann_service"] = text
 
     await update.message.reply_text(
         "📍 Манзилни ёзинг:"
@@ -512,7 +760,15 @@ async def ann_service(update, context):
 
 async def ann_address(update, context):
 
-    context.user_data["ann_address"] = update.message.text
+    text = update.message.text.strip()
+
+    if not text:
+        await update.message.reply_text(
+            "❗ Манзилни ёзинг:"
+        )
+        return ANN_ADDRESS
+
+    context.user_data["ann_address"] = text
 
     await update.message.reply_text(
         "💰 Бюджетингизни ёзинг:"
@@ -523,7 +779,15 @@ async def ann_address(update, context):
 
 async def ann_budget(update, context):
 
-    context.user_data["ann_budget"] = update.message.text
+    text = update.message.text.strip()
+
+    if not text:
+        await update.message.reply_text(
+            "❗ Бюджетингизни ёзинг:"
+        )
+        return ANN_BUDGET
+
+    context.user_data["ann_budget"] = text
 
     await update.message.reply_text(
         "📝 Қўшимча маълумотни ёзинг:"
@@ -534,7 +798,15 @@ async def ann_budget(update, context):
 
 async def ann_details(update, context):
 
-    context.user_data["ann_details"] = update.message.text
+    details = update.message.text.strip()
+
+    if not details:
+        await update.message.reply_text(
+            "❗ Қўшимча маълумотни ёзинг:"
+        )
+        return ANN_DETAILS
+
+    context.user_data["ann_details"] = details
 
     user = update.effective_user
     data = context.user_data
@@ -843,6 +1115,12 @@ async def menu_handler(update, context):
     if text == "🔧 Хизматлар":
         return await services(update, context)
 
+    if text == "👨‍🔧 Уста чақириш":
+        return await worker_start(update, context)
+
+    if text == "📢 Эълон бериш":
+        return await announcement_start(update, context)
+
     if text == "Алоқа":
         return await contact(update, context)
 
@@ -898,7 +1176,10 @@ def main():
         .build()
     )
 
-    # CUSTOMER
+    # =========================
+    # CUSTOMER CONVERSATION
+    # =========================
+
     customer_conversation = ConversationHandler(
         entry_points=[
             MessageHandler(
@@ -910,37 +1191,71 @@ def main():
                 service_selected,
             )
         ],
+
         states={
+
             NAME: [
+                MessageHandler(
+                    filters.Regex(MAIN_MENU_PATTERN),
+                    cancel_to_main,
+                ),
                 MessageHandler(
                     filters.TEXT & ~filters.COMMAND,
                     customer_name,
-                )
+                ),
             ],
+
             PHONE: [
+                MessageHandler(
+                    filters.Regex(MAIN_MENU_PATTERN),
+                    cancel_to_main,
+                ),
                 MessageHandler(
                     filters.TEXT & ~filters.COMMAND,
                     customer_phone,
-                )
+                ),
             ],
+
             ADDRESS: [
+                MessageHandler(
+                    filters.Regex(MAIN_MENU_PATTERN),
+                    cancel_to_main,
+                ),
                 MessageHandler(
                     filters.TEXT & ~filters.COMMAND,
                     customer_address,
-                )
+                ),
             ],
+
             PROBLEM: [
+                MessageHandler(
+                    filters.Regex(MAIN_MENU_PATTERN),
+                    cancel_to_main,
+                ),
                 MessageHandler(
                     filters.TEXT & ~filters.COMMAND,
                     customer_problem,
-                )
+                ),
             ],
         },
-        fallbacks=[],
+
+        fallbacks=[
+            CommandHandler("start", start),
+            CommandHandler("cancel", cancel_command),
+            MessageHandler(
+                filters.Regex(MAIN_MENU_PATTERN),
+                cancel_to_main,
+            ),
+        ],
+
         allow_reentry=True,
     )
 
-    # WORKER
+
+    # =========================
+    # WORKER CONVERSATION
+    # =========================
+
     worker_conversation = ConversationHandler(
         entry_points=[
             MessageHandler(
@@ -948,43 +1263,82 @@ def main():
                 worker_start,
             )
         ],
+
         states={
+
             WORKER_NAME: [
+                MessageHandler(
+                    filters.Regex(MAIN_MENU_PATTERN),
+                    cancel_to_main,
+                ),
                 MessageHandler(
                     filters.TEXT & ~filters.COMMAND,
                     worker_name,
-                )
+                ),
             ],
+
             WORKER_PHONE: [
+                MessageHandler(
+                    filters.Regex(MAIN_MENU_PATTERN),
+                    cancel_to_main,
+                ),
                 MessageHandler(
                     filters.TEXT & ~filters.COMMAND,
                     worker_phone,
-                )
+                ),
             ],
+
             WORKER_SERVICE: [
+                MessageHandler(
+                    filters.Regex(MAIN_MENU_PATTERN),
+                    cancel_to_main,
+                ),
                 MessageHandler(
                     filters.TEXT & ~filters.COMMAND,
                     worker_service,
-                )
+                ),
             ],
+
             WORKER_AREA: [
+                MessageHandler(
+                    filters.Regex(MAIN_MENU_PATTERN),
+                    cancel_to_main,
+                ),
                 MessageHandler(
                     filters.TEXT & ~filters.COMMAND,
                     worker_area,
-                )
+                ),
             ],
+
             WORKER_PRICE: [
+                MessageHandler(
+                    filters.Regex(MAIN_MENU_PATTERN),
+                    cancel_to_main,
+                ),
                 MessageHandler(
                     filters.TEXT & ~filters.COMMAND,
                     worker_price,
-                )
+                ),
             ],
         },
-        fallbacks=[],
+
+        fallbacks=[
+            CommandHandler("start", start),
+            CommandHandler("cancel", cancel_command),
+            MessageHandler(
+                filters.Regex(MAIN_MENU_PATTERN),
+                cancel_to_main,
+            ),
+        ],
+
         allow_reentry=True,
     )
 
-    # ANNOUNCEMENT
+
+    # =========================
+    # ANNOUNCEMENT CONVERSATION
+    # =========================
+
     announcement_conversation = ConversationHandler(
         entry_points=[
             MessageHandler(
@@ -992,49 +1346,93 @@ def main():
                 announcement_start,
             )
         ],
+
         states={
+
             ANN_NAME: [
+                MessageHandler(
+                    filters.Regex(MAIN_MENU_PATTERN),
+                    cancel_to_main,
+                ),
                 MessageHandler(
                     filters.TEXT & ~filters.COMMAND,
                     ann_name,
-                )
+                ),
             ],
+
             ANN_PHONE: [
+                MessageHandler(
+                    filters.Regex(MAIN_MENU_PATTERN),
+                    cancel_to_main,
+                ),
                 MessageHandler(
                     filters.TEXT & ~filters.COMMAND,
                     ann_phone,
-                )
+                ),
             ],
+
             ANN_SERVICE: [
+                MessageHandler(
+                    filters.Regex(MAIN_MENU_PATTERN),
+                    cancel_to_main,
+                ),
                 MessageHandler(
                     filters.TEXT & ~filters.COMMAND,
                     ann_service,
-                )
+                ),
             ],
+
             ANN_ADDRESS: [
+                MessageHandler(
+                    filters.Regex(MAIN_MENU_PATTERN),
+                    cancel_to_main,
+                ),
                 MessageHandler(
                     filters.TEXT & ~filters.COMMAND,
                     ann_address,
-                )
+                ),
             ],
+
             ANN_BUDGET: [
+                MessageHandler(
+                    filters.Regex(MAIN_MENU_PATTERN),
+                    cancel_to_main,
+                ),
                 MessageHandler(
                     filters.TEXT & ~filters.COMMAND,
                     ann_budget,
-                )
+                ),
             ],
+
             ANN_DETAILS: [
+                MessageHandler(
+                    filters.Regex(MAIN_MENU_PATTERN),
+                    cancel_to_main,
+                ),
                 MessageHandler(
                     filters.TEXT & ~filters.COMMAND,
                     ann_details,
-                )
+                ),
             ],
         },
-        fallbacks=[],
+
+        fallbacks=[
+            CommandHandler("start", start),
+            CommandHandler("cancel", cancel_command),
+            MessageHandler(
+                filters.Regex(MAIN_MENU_PATTERN),
+                cancel_to_main,
+            ),
+        ],
+
         allow_reentry=True,
     )
 
+
+    # =========================
     # COMMANDS
+    # =========================
+
     application.add_handler(
         CommandHandler("start", start)
     )
@@ -1066,7 +1464,11 @@ def main():
         CommandHandler("stats", stats_command)
     )
 
+
+    # =========================
     # CONVERSATIONS
+    # =========================
+
     application.add_handler(
         customer_conversation
     )
@@ -1079,7 +1481,11 @@ def main():
         announcement_conversation
     )
 
+
+    # =========================
     # MENU
+    # =========================
+
     application.add_handler(
         MessageHandler(
             filters.TEXT & ~filters.COMMAND,
@@ -1087,11 +1493,20 @@ def main():
         )
     )
 
+
+    # =========================
+    # ERROR
+    # =========================
+
     application.add_error_handler(
         error_handler
     )
 
+
+    # =========================
     # RENDER WEB SERVICE
+    # =========================
+
     if RENDER_EXTERNAL_URL:
 
         webhook_url = (

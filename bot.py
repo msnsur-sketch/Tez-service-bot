@@ -1250,7 +1250,7 @@ def main():
             ),
         ],
 
-        allow_reentry=True,
+        allow_reentry=False,
     )
 
 

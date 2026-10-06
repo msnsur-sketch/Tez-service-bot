@@ -134,6 +134,21 @@ def init_database():
 
             cur.execute(
                 """
+                ALTER TABLE workers
+                ADD COLUMN IF NOT EXISTS is_active BOOLEAN DEFAULT TRUE
+                """
+            )
+
+            cur.execute(
+                """
+                UPDATE workers
+                SET is_active = TRUE
+                WHERE is_active IS NULL
+                """
+            )
+
+            cur.execute(
+                """
                 ALTER TABLE orders
                 ADD COLUMN IF NOT EXISTS telegram_id BIGINT
                 """
@@ -178,7 +193,6 @@ def init_database():
                 """
             )
 
-            # Эски буюртмалар учун
             cur.execute(
                 """
                 UPDATE orders
@@ -600,7 +614,7 @@ async def customer_problem(
     matching_workers = []
 
     # =====================================================
-    # 1. SAVE ORDER + FIND MATCHING WORKERS
+    # SAVE ORDER + FIND ACTIVE MATCHING WORKERS
     # =====================================================
 
     with get_connection() as conn:
@@ -637,7 +651,7 @@ async def customer_problem(
             if result:
                 order_id = result[0]
 
-            # Барча усталарни оламиз
+            # Фақат ФАОЛ усталар
             cur.execute(
                 """
                 SELECT
@@ -647,6 +661,7 @@ async def customer_problem(
                     area,
                     price
                 FROM workers
+                WHERE is_active = TRUE
                 ORDER BY id DESC
                 """
             )
@@ -666,7 +681,7 @@ async def customer_problem(
         conn.commit()
 
     # =====================================================
-    # 2. SEND ORDER TO WORKERS
+    # SEND ORDER TO ACTIVE WORKERS
     # =====================================================
 
     sent_count = 0
@@ -690,7 +705,6 @@ async def customer_problem(
             worker_telegram_id
         )
 
-        # Бир Telegram ID'га бир марта
         if worker_telegram_id in sent_worker_ids:
 
             logger.info(
@@ -705,10 +719,6 @@ async def customer_problem(
         sent_worker_ids.add(
             worker_telegram_id
         )
-
-        # =================================================
-        # INLINE BUTTON
-        # =================================================
 
         keyboard = [
             [
@@ -760,7 +770,7 @@ async def customer_problem(
             )
 
     # =====================================================
-    # 3. RESULT
+    # RESULT
     # =====================================================
 
     if sent_count > 0:
@@ -785,7 +795,7 @@ async def customer_problem(
         )
 
     # =====================================================
-    # 4. CUSTOMER CONFIRMATION
+    # CUSTOMER CONFIRMATION
     # =====================================================
 
     await update.message.reply_text(
@@ -821,10 +831,6 @@ async def accept_order_callback(
 
     worker_telegram_id = update.effective_user.id
 
-    # =====================================================
-    # GET ORDER ID
-    # =====================================================
-
     try:
 
         order_id = int(
@@ -843,20 +849,16 @@ async def accept_order_callback(
     customer_telegram_id = None
     order_data = None
 
-    # =====================================================
-    # ACCEPT ORDER ATOMICALLY
-    # =====================================================
-
     with get_connection() as conn:
 
         with conn.cursor() as cur:
 
-            # Устанинг ҳақиқий профилини оламиз
             cur.execute(
                 """
                 SELECT name
                 FROM workers
                 WHERE telegram_id = %s
+                  AND is_active = TRUE
                 ORDER BY id DESC
                 LIMIT 1
                 """,
@@ -868,16 +870,13 @@ async def accept_order_callback(
             if not worker:
 
                 await query.message.reply_text(
-                    "❌ Сиз уста сифатида рўйхатдан ўтмагансиз."
+                    "❌ Сизнинг уста профилингиз ҳозир НОФАОЛ "
+                    "ёки уста сифатида рўйхатдан ўтмагансиз."
                 )
 
                 return
 
             worker_name = worker[0]
-
-            # =================================================
-            # ФАҚАТ status = new БЎЛСА ҚАБУЛ ҚИЛИНАДИ
-            # =================================================
 
             cur.execute(
                 """
@@ -907,10 +906,6 @@ async def accept_order_callback(
 
             accepted_order = cur.fetchone()
 
-            # =================================================
-            # IF ACCEPTED
-            # =================================================
-
             if accepted_order:
 
                 order_data = accepted_order
@@ -918,10 +913,6 @@ async def accept_order_callback(
                 customer_telegram_id = accepted_order[1]
 
         conn.commit()
-
-    # =====================================================
-    # ORDER ALREADY ACCEPTED
-    # =====================================================
 
     if not order_data:
 
@@ -936,10 +927,6 @@ async def accept_order_callback(
 
         return
 
-    # =====================================================
-    # WORKER CONFIRMATION
-    # =====================================================
-
     await query.edit_message_reply_markup(
         reply_markup=None
     )
@@ -953,10 +940,6 @@ async def accept_order_callback(
         f"📝 Муаммо: {order_data[6]}\n\n"
         "📲 Мижоз билан боғланинг."
     )
-
-    # =====================================================
-    # CUSTOMER NOTIFICATION
-    # =====================================================
 
     if customer_telegram_id:
 
@@ -1193,7 +1176,7 @@ async def worker_price(
     data = context.user_data
 
     # =====================================================
-    # SAVE WORKER
+    # SAVE / UPDATE WORKER
     # =====================================================
 
     with get_connection() as conn:
@@ -1202,26 +1185,68 @@ async def worker_price(
 
             cur.execute(
                 """
-                INSERT INTO workers
-                (
-                    telegram_id,
-                    name,
-                    phone,
-                    service,
-                    area,
-                    price
-                )
-                VALUES (%s, %s, %s, %s, %s, %s)
+                SELECT id
+                FROM workers
+                WHERE telegram_id = %s
+                ORDER BY id DESC
+                LIMIT 1
                 """,
-                (
-                    user.id,
-                    data["worker_name"],
-                    data["worker_phone"],
-                    data["worker_service"],
-                    data["worker_area"],
-                    data["worker_price"],
-                ),
+                (user.id,),
             )
+
+            existing_worker = cur.fetchone()
+
+            if existing_worker:
+
+                # Мавжуд профильни янгилаймиз
+                cur.execute(
+                    """
+                    UPDATE workers
+                    SET
+                        name = %s,
+                        phone = %s,
+                        service = %s,
+                        area = %s,
+                        price = %s,
+                        is_active = TRUE
+                    WHERE id = %s
+                    """,
+                    (
+                        data["worker_name"],
+                        data["worker_phone"],
+                        data["worker_service"],
+                        data["worker_area"],
+                        data["worker_price"],
+                        existing_worker[0],
+                    ),
+                )
+
+            else:
+
+                # Янги уста
+                cur.execute(
+                    """
+                    INSERT INTO workers
+                    (
+                        telegram_id,
+                        name,
+                        phone,
+                        service,
+                        area,
+                        price,
+                        is_active
+                    )
+                    VALUES (%s, %s, %s, %s, %s, %s, TRUE)
+                    """,
+                    (
+                        user.id,
+                        data["worker_name"],
+                        data["worker_phone"],
+                        data["worker_service"],
+                        data["worker_area"],
+                        data["worker_price"],
+                    ),
+                )
 
         conn.commit()
 
@@ -1231,7 +1256,8 @@ async def worker_price(
         f"📞 Телефон: {data['worker_phone']}\n"
         f"🔧 Хизмат: {data['worker_service']}\n"
         f"📍 Ҳудуд: {data['worker_area']}\n"
-        f"💰 Нархи: {data['worker_price']}",
+        f"💰 Нархи: {data['worker_price']}\n"
+        "📊 Ҳолат: 🟢 Фаол",
         reply_markup=main_menu(),
     )
 
@@ -1441,10 +1467,6 @@ async def announcement_details(
 
     data = context.user_data
 
-    # =====================================================
-    # SAVE ANNOUNCEMENT
-    # =====================================================
-
     with get_connection() as conn:
 
         with conn.cursor() as cur:
@@ -1510,11 +1532,13 @@ async def my_profile(
             cur.execute(
                 """
                 SELECT
+                    id,
                     name,
                     phone,
                     service,
                     area,
                     price,
+                    is_active,
                     created_at
                 FROM workers
                 WHERE telegram_id = %s
@@ -1536,15 +1560,170 @@ async def my_profile(
 
         return
 
+    worker_id = worker[0]
+
+    if worker[6]:
+
+        status_text = "🟢 Фаол"
+
+        button_text = "🔴 Нофаол қилиш"
+
+        callback_data = (
+            f"profile_deactivate:{worker_id}"
+        )
+
+    else:
+
+        status_text = "🔴 Нофаол"
+
+        button_text = "🟢 Фаол қилиш"
+
+        callback_data = (
+            f"profile_activate:{worker_id}"
+        )
+
+    keyboard = [
+        [
+            InlineKeyboardButton(
+                button_text,
+                callback_data=callback_data,
+            )
+        ]
+    ]
+
     await update.message.reply_text(
+        "👤 МЕНИНГ ПРОФИЛИМ\n\n"
+        f"👤 Исм: {worker[1]}\n"
+        f"📞 Телефон: {worker[2]}\n"
+        f"🔧 Хизмат: {worker[3]}\n"
+        f"📍 Ҳудуд: {worker[4]}\n"
+        f"💰 Нархи: {worker[5]}\n"
+        f"📊 Ҳолат: {status_text}\n"
+        f"🕒 Рўйхатдан ўтган: {worker[7]}",
+        reply_markup=InlineKeyboardMarkup(keyboard),
+    )
+
+
+# =========================================================
+# PROFILE STATUS CALLBACK
+# =========================================================
+
+async def profile_status_callback(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+):
+
+    query = update.callback_query
+
+    await query.answer()
+
+    user = update.effective_user
+
+    try:
+
+        action, worker_id = query.data.split(":")
+
+        worker_id = int(worker_id)
+
+    except Exception:
+
+        await query.message.reply_text(
+            "❌ Профиль маълумоти нотўғри."
+        )
+
+        return
+
+    new_status = action == "profile_activate"
+
+    with get_connection() as conn:
+
+        with conn.cursor() as cur:
+
+            cur.execute(
+                """
+                UPDATE workers
+                SET is_active = %s
+                WHERE id = %s
+                  AND telegram_id = %s
+                RETURNING
+                    name,
+                    phone,
+                    service,
+                    area,
+                    price,
+                    is_active,
+                    created_at
+                """,
+                (
+                    new_status,
+                    worker_id,
+                    user.id,
+                ),
+            )
+
+            worker = cur.fetchone()
+
+        conn.commit()
+
+    if not worker:
+
+        await query.answer(
+            "❌ Профиль топилмади.",
+            show_alert=True,
+        )
+
+        return
+
+    if worker[5]:
+
+        status_text = "🟢 Фаол"
+
+        button_text = "🔴 Нофаол қилиш"
+
+        callback_data = (
+            f"profile_deactivate:{worker_id}"
+        )
+
+        status_message = (
+            "🟢 Профилингиз ФАОЛ қилинди.\n\n"
+            "Энди янги буюртмалар келиши мумкин."
+        )
+
+    else:
+
+        status_text = "🔴 Нофаол"
+
+        button_text = "🟢 Фаол қилиш"
+
+        callback_data = (
+            f"profile_activate:{worker_id}"
+        )
+
+        status_message = (
+            "🔴 Профилингиз НОФАОЛ қилинди.\n\n"
+            "Энди янги буюртмалар келмайди."
+        )
+
+    keyboard = [
+        [
+            InlineKeyboardButton(
+                button_text,
+                callback_data=callback_data,
+            )
+        ]
+    ]
+
+    await query.edit_message_text(
         "👤 МЕНИНГ ПРОФИЛИМ\n\n"
         f"👤 Исм: {worker[0]}\n"
         f"📞 Телефон: {worker[1]}\n"
         f"🔧 Хизмат: {worker[2]}\n"
         f"📍 Ҳудуд: {worker[3]}\n"
         f"💰 Нархи: {worker[4]}\n"
-        f"🕒 Рўйхатдан ўтган: {worker[5]}",
-        reply_markup=main_menu(),
+        f"📊 Ҳолат: {status_text}\n"
+        f"🕒 Рўйхатдан ўтган: {worker[6]}\n\n"
+        f"{status_message}",
+        reply_markup=InlineKeyboardMarkup(keyboard),
     )
 
 
@@ -1666,6 +1845,7 @@ async def workers_command(
                     service,
                     area,
                     price,
+                    is_active,
                     created_at
                 FROM workers
                 ORDER BY id DESC
@@ -1686,13 +1866,20 @@ async def workers_command(
 
     for row in rows:
 
+        status_text = (
+            "🟢 Фаол"
+            if row[6]
+            else "🔴 Нофаол"
+        )
+
         text += (
             f"#{row[0]} {row[1]}\n"
             f"🔧 Хизмат: {row[3]}\n"
             f"📍 Ҳудуд: {row[4]}\n"
             f"💰 Нархи: {row[5]}\n"
             f"📞 Телефон: {row[2]}\n"
-            f"🕒 {row[6]}\n\n"
+            f"📊 Ҳолат: {status_text}\n"
+            f"🕒 {row[7]}\n\n"
         )
 
     await update.message.reply_text(text)
@@ -1933,6 +2120,7 @@ async def admin_callback(
                         service,
                         area,
                         price,
+                        is_active,
                         created_at
                     FROM workers
                     ORDER BY id DESC
@@ -1953,13 +2141,20 @@ async def admin_callback(
 
         for row in rows:
 
+            status_text = (
+                "🟢 Фаол"
+                if row[6]
+                else "🔴 Нофаол"
+            )
+
             text += (
                 f"#{row[0]} {row[1]}\n"
                 f"🔧 Хизмат: {row[3]}\n"
                 f"📍 Ҳудуд: {row[4]}\n"
                 f"💰 Нархи: {row[5]}\n"
                 f"📞 Телефон: {row[2]}\n"
-                f"🕒 {row[6]}\n\n"
+                f"📊 Ҳолат: {status_text}\n"
+                f"🕒 {row[7]}\n\n"
             )
 
         await query.message.reply_text(text)
@@ -2432,6 +2627,17 @@ def build_application():
     )
 
     # =====================================================
+    # PROFILE STATUS CALLBACK
+    # =====================================================
+
+    application.add_handler(
+        CallbackQueryHandler(
+            profile_status_callback,
+            pattern=r"^profile_(activate|deactivate):\d+$",
+        )
+    )
+
+    # =====================================================
     # ADMIN CALLBACK
     # =====================================================
 
@@ -2529,8 +2735,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
-
-
-
-

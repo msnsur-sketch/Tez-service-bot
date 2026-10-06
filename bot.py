@@ -1,7 +1,6 @@
 import logging
 import os
 import re
-from datetime import datetime
 
 import psycopg
 
@@ -51,6 +50,7 @@ logger = logging.getLogger(__name__)
 # =========================================================
 
 def get_connection():
+
     if not DATABASE_URL:
         raise RuntimeError("DATABASE_URL topilmadi")
 
@@ -60,7 +60,12 @@ def get_connection():
 def init_database():
 
     with get_connection() as conn:
+
         with conn.cursor() as cur:
+
+            # =================================================
+            # WORKERS
+            # =================================================
 
             cur.execute(
                 """
@@ -77,6 +82,10 @@ def init_database():
                 """
             )
 
+            # =================================================
+            # ORDERS
+            # =================================================
+
             cur.execute(
                 """
                 CREATE TABLE IF NOT EXISTS orders (
@@ -91,6 +100,10 @@ def init_database():
                 )
                 """
             )
+
+            # =================================================
+            # ANNOUNCEMENTS
+            # =================================================
 
             cur.execute(
                 """
@@ -108,7 +121,10 @@ def init_database():
                 """
             )
 
-            # Эски базалар учун ҳам ишлайди
+            # =================================================
+            # OLD DATABASE COMPATIBILITY
+            # =================================================
+
             cur.execute(
                 """
                 ALTER TABLE workers
@@ -127,6 +143,47 @@ def init_database():
                 """
                 ALTER TABLE announcements
                 ADD COLUMN IF NOT EXISTS telegram_id BIGINT
+                """
+            )
+
+            # =================================================
+            # NEW ORDER STATUS FIELDS
+            # =================================================
+
+            cur.execute(
+                """
+                ALTER TABLE orders
+                ADD COLUMN IF NOT EXISTS status TEXT DEFAULT 'new'
+                """
+            )
+
+            cur.execute(
+                """
+                ALTER TABLE orders
+                ADD COLUMN IF NOT EXISTS accepted_worker_id BIGINT
+                """
+            )
+
+            cur.execute(
+                """
+                ALTER TABLE orders
+                ADD COLUMN IF NOT EXISTS accepted_worker_name TEXT
+                """
+            )
+
+            cur.execute(
+                """
+                ALTER TABLE orders
+                ADD COLUMN IF NOT EXISTS accepted_at TIMESTAMPTZ
+                """
+            )
+
+            # Эски буюртмалар учун
+            cur.execute(
+                """
+                UPDATE orders
+                SET status = 'new'
+                WHERE status IS NULL
                 """
             )
 
@@ -219,13 +276,11 @@ def canonical_service(text):
         "kompyuter" in normalized
         or "komyuter" in normalized
         or "komputer" in normalized
-        or "komyuter" in normalized
     ):
         return "kompyuter"
 
     if (
         "santexnik" in normalized
-        or "santehnik" in normalized
         or "santehnik" in normalized
     ):
         return "santexnik"
@@ -238,7 +293,6 @@ def canonical_service(text):
 
     if (
         "uy tozalash" in normalized
-        or "uy tozalash" in normalized
         or "tozalash" in normalized
     ):
         return "tozalash"
@@ -331,7 +385,10 @@ def services_menu():
 # START
 # =========================================================
 
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def start(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+):
 
     context.user_data.clear()
 
@@ -434,9 +491,11 @@ async def customer_name(
     name = update.message.text.strip()
 
     if not name:
+
         await update.message.reply_text(
             "❗ Исмингизни ёзинг:"
         )
+
         return NAME
 
     context.user_data["name"] = name
@@ -459,7 +518,6 @@ async def customer_phone(
 
     phone = update.message.text.strip()
 
-    # Рақамдан ташқари белгиларни олиб ташлаймиз
     digits = re.sub(
         r"\D",
         "",
@@ -549,7 +607,6 @@ async def customer_problem(
 
         with conn.cursor() as cur:
 
-            # Буюртмани Supabase'га сақлаш
             cur.execute(
                 """
                 INSERT INTO orders
@@ -559,9 +616,10 @@ async def customer_problem(
                     phone,
                     service,
                     address,
-                    problem
+                    problem,
+                    status
                 )
-                VALUES (%s, %s, %s, %s, %s, %s)
+                VALUES (%s, %s, %s, %s, %s, %s, 'new')
                 RETURNING id
                 """,
                 (
@@ -595,10 +653,8 @@ async def customer_problem(
 
             rows = cur.fetchall()
 
-            # Танланган хизматга мос усталар
             for row in rows:
 
-                worker_telegram_id = row[0]
                 worker_service = row[2]
 
                 if service_matches(
@@ -615,8 +671,6 @@ async def customer_problem(
 
     sent_count = 0
 
-    # ЭНГ МУҲИМ:
-    # Бир Telegram ID'га бир буюртма фақат 1 марта
     sent_worker_ids = set()
 
     for worker in matching_workers:
@@ -624,7 +678,6 @@ async def customer_problem(
         worker_telegram_id = worker[0]
         worker_name = worker[1]
 
-        # Telegram ID бўлмаса
         if not worker_telegram_id:
 
             logger.warning(
@@ -637,7 +690,7 @@ async def customer_problem(
             worker_telegram_id
         )
 
-        # Дубликат Telegram ID'ни ўтказиб юборамиз
+        # Бир Telegram ID'га бир марта
         if worker_telegram_id in sent_worker_ids:
 
             logger.info(
@@ -649,9 +702,25 @@ async def customer_problem(
 
             continue
 
-        # ID'ни рўйхатга қўшамиз
         sent_worker_ids.add(
             worker_telegram_id
+        )
+
+        # =================================================
+        # INLINE BUTTON
+        # =================================================
+
+        keyboard = [
+            [
+                InlineKeyboardButton(
+                    "✅ Буюртмани оламан",
+                    callback_data=f"accept_order:{order_id}",
+                )
+            ]
+        ]
+
+        reply_markup = InlineKeyboardMarkup(
+            keyboard
         )
 
         worker_message = (
@@ -662,7 +731,8 @@ async def customer_problem(
             f"🔧 Хизмат: {data['service']}\n"
             f"📍 Манзил: {data['address']}\n"
             f"📝 Муаммо: {data['problem']}\n\n"
-            "📲 Мижоз билан боғланинг."
+            "📲 Агар буюртмани олишни истасангиз, "
+            "пастдаги тугмани босинг."
         )
 
         try:
@@ -670,6 +740,7 @@ async def customer_problem(
             await context.bot.send_message(
                 chat_id=worker_telegram_id,
                 text=worker_message,
+                reply_markup=reply_markup,
             )
 
             sent_count += 1
@@ -733,6 +804,219 @@ async def customer_problem(
     context.user_data.clear()
 
     return ConversationHandler.END
+
+
+# =========================================================
+# ACCEPT ORDER CALLBACK
+# =========================================================
+
+async def accept_order_callback(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+):
+
+    query = update.callback_query
+
+    await query.answer()
+
+    worker_telegram_id = update.effective_user.id
+
+    # =====================================================
+    # GET ORDER ID
+    # =====================================================
+
+    try:
+
+        order_id = int(
+            query.data.split(":")[1]
+        )
+
+    except Exception:
+
+        await query.message.reply_text(
+            "❌ Буюртма рақами нотўғри."
+        )
+
+        return
+
+    worker_name = None
+    customer_telegram_id = None
+    order_data = None
+
+    # =====================================================
+    # ACCEPT ORDER ATOMICALLY
+    # =====================================================
+
+    with get_connection() as conn:
+
+        with conn.cursor() as cur:
+
+            # Устанинг ҳақиқий профилини оламиз
+            cur.execute(
+                """
+                SELECT name
+                FROM workers
+                WHERE telegram_id = %s
+                ORDER BY id DESC
+                LIMIT 1
+                """,
+                (worker_telegram_id,),
+            )
+
+            worker = cur.fetchone()
+
+            if not worker:
+
+                await query.message.reply_text(
+                    "❌ Сиз уста сифатида рўйхатдан ўтмагансиз."
+                )
+
+                return
+
+            worker_name = worker[0]
+
+            # =================================================
+            # ФАҚАТ status = new БЎЛСА ҚАБУЛ ҚИЛИНАДИ
+            # =================================================
+
+            cur.execute(
+                """
+                UPDATE orders
+                SET
+                    status = 'accepted',
+                    accepted_worker_id = %s,
+                    accepted_worker_name = %s,
+                    accepted_at = NOW()
+                WHERE id = %s
+                  AND status = 'new'
+                RETURNING
+                    id,
+                    telegram_id,
+                    name,
+                    phone,
+                    service,
+                    address,
+                    problem
+                """,
+                (
+                    worker_telegram_id,
+                    worker_name,
+                    order_id,
+                ),
+            )
+
+            accepted_order = cur.fetchone()
+
+            # =================================================
+            # IF ACCEPTED
+            # =================================================
+
+            if accepted_order:
+
+                order_data = accepted_order
+
+                customer_telegram_id = accepted_order[1]
+
+        conn.commit()
+
+    # =====================================================
+    # ORDER ALREADY ACCEPTED
+    # =====================================================
+
+    if not order_data:
+
+        await query.edit_message_reply_markup(
+            reply_markup=None
+        )
+
+        await query.message.reply_text(
+            "⚠️ Бу буюртма аллақачон бошқа уста "
+            "томонидан қабул қилинган."
+        )
+
+        return
+
+    # =====================================================
+    # WORKER CONFIRMATION
+    # =====================================================
+
+    await query.edit_message_reply_markup(
+        reply_markup=None
+    )
+
+    await query.message.reply_text(
+        "✅ Буюртмани сиз қабул қилдингиз!\n\n"
+        f"📌 Буюртма №{order_id}\n"
+        f"👤 Мижоз: {order_data[2]}\n"
+        f"📞 Телефон: {order_data[3]}\n"
+        f"📍 Манзил: {order_data[5]}\n"
+        f"📝 Муаммо: {order_data[6]}\n\n"
+        "📲 Мижоз билан боғланинг."
+    )
+
+    # =====================================================
+    # CUSTOMER NOTIFICATION
+    # =====================================================
+
+    if customer_telegram_id:
+
+        try:
+
+            await context.bot.send_message(
+                chat_id=int(customer_telegram_id),
+                text=(
+                    "✅ БУЮРТМАНГИЗНИ УСТА ҚАБУЛ ҚИЛДИ!\n\n"
+                    f"📌 Буюртма №{order_id}\n\n"
+                    f"👨‍🔧 Уста: {worker_name}\n"
+                    f"📞 Устанинг рақами: "
+                    f"{await get_worker_phone(worker_telegram_id)}\n\n"
+                    "📲 Уста тез орада сиз билан боғланади."
+                ),
+            )
+
+            logger.info(
+                f"Order #{order_id} accepted by "
+                f"{worker_name} "
+                f"(telegram_id={worker_telegram_id})"
+            )
+
+        except Exception as e:
+
+            logger.exception(
+                f"Failed to notify customer "
+                f"for order #{order_id}: {e}"
+            )
+
+
+# =========================================================
+# GET WORKER PHONE
+# =========================================================
+
+async def get_worker_phone(
+    worker_telegram_id
+):
+
+    with get_connection() as conn:
+
+        with conn.cursor() as cur:
+
+            cur.execute(
+                """
+                SELECT phone
+                FROM workers
+                WHERE telegram_id = %s
+                ORDER BY id DESC
+                LIMIT 1
+                """,
+                (worker_telegram_id,),
+            )
+
+            row = cur.fetchone()
+
+    if row and row[0]:
+        return str(row[0])
+
+    return "кўрсатилмаган"
 
 
 # =========================================================
@@ -1444,6 +1728,8 @@ async def orders_command(
                     service,
                     address,
                     problem,
+                    status,
+                    accepted_worker_name,
                     created_at
                 FROM orders
                 ORDER BY id DESC
@@ -1464,6 +1750,12 @@ async def orders_command(
 
     for row in rows:
 
+        status_text = (
+            "🟢 Янги"
+            if row[6] == "new"
+            else "✅ Қабул қилинган"
+        )
+
         text += (
             f"#{row[0]}\n"
             f"👤 Исм: {row[1]}\n"
@@ -1471,7 +1763,16 @@ async def orders_command(
             f"🔧 Хизмат: {row[3]}\n"
             f"📍 Манзил: {row[4]}\n"
             f"📝 Муаммо: {row[5]}\n"
-            f"🕒 {row[6]}\n\n"
+            f"📊 Ҳолат: {status_text}\n"
+        )
+
+        if row[7]:
+            text += (
+                f"👨‍🔧 Уста: {row[7]}\n"
+            )
+
+        text += (
+            f"🕒 {row[8]}\n\n"
         )
 
     await update.message.reply_text(text)
@@ -1619,7 +1920,6 @@ async def admin_callback(
 
     if query.data == "admin_workers":
 
-        # Усталарни олиш
         with get_connection() as conn:
 
             with conn.cursor() as cur:
@@ -1679,6 +1979,8 @@ async def admin_callback(
                         service,
                         address,
                         problem,
+                        status,
+                        accepted_worker_name,
                         created_at
                     FROM orders
                     ORDER BY id DESC
@@ -1699,6 +2001,12 @@ async def admin_callback(
 
         for row in rows:
 
+            status_text = (
+                "🟢 Янги"
+                if row[6] == "new"
+                else "✅ Қабул қилинган"
+            )
+
             text += (
                 f"#{row[0]}\n"
                 f"👤 Исм: {row[1]}\n"
@@ -1706,7 +2014,16 @@ async def admin_callback(
                 f"🔧 Хизмат: {row[3]}\n"
                 f"📍 Манзил: {row[4]}\n"
                 f"📝 Муаммо: {row[5]}\n"
-                f"🕒 {row[6]}\n\n"
+                f"📊 Ҳолат: {status_text}\n"
+            )
+
+            if row[7]:
+                text += (
+                    f"👨‍🔧 Уста: {row[7]}\n"
+                )
+
+            text += (
+                f"🕒 {row[8]}\n\n"
             )
 
         await query.message.reply_text(text)
@@ -2103,6 +2420,21 @@ def build_application():
         )
     )
 
+    # =====================================================
+    # ACCEPT ORDER CALLBACK
+    # =====================================================
+
+    application.add_handler(
+        CallbackQueryHandler(
+            accept_order_callback,
+            pattern=r"^accept_order:\d+$",
+        )
+    )
+
+    # =====================================================
+    # ADMIN CALLBACK
+    # =====================================================
+
     application.add_handler(
         CallbackQueryHandler(
             admin_callback,
@@ -2197,3 +2529,16 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+Энди телефондан нима қиласиз?
+
+1. GitHub’да "telegram_bot/bot.py" ни очинг.
+2. Edit (қаламча) ни босинг.
+3. Эски кодни тўлиқ ўчиринг.
+4. Юқоридаги янги кодни тўлиқ қўйинг.
+5. Commit changes қилинг.
+6. Render автоматик redeploy бошлайди.
+
+Supabase’га қўшимча SQL киритиш шарт эмас. Бот ишга тушганда "orders" жадвалига "status", "accepted_worker_id", "accepted_worker_name", "accepted_at" устунларини ўзи қўшади.
+
+Кейин тест қиламиз: мижоз аккаунти → буюртма → Mansur уста аккаунти → «✅ Буюртмани оламан» → мижозга хабар.

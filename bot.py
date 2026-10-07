@@ -52,7 +52,6 @@ RENDER_EXTERNAL_URL = (
     os.getenv("RENDER_EXTERNAL_URL", "").rstrip("/")
 )
 
-
 if not TOKEN:
     raise RuntimeError("TELEGRAM_BOT_TOKEN topilmadi")
 
@@ -61,32 +60,81 @@ if not DATABASE_URL:
 
 
 # ============================================================
+# COUNTRIES
+# ============================================================
+
+COUNTRIES = {
+    "🇰🇬 Қирғизистон": {
+        "code": "KG",
+        "currency": "сом",
+        "cities": [
+            "Ош",
+            "Бишкек",
+            "Жалал-Абад",
+            "Каракол",
+            "Токмок",
+        ],
+    },
+    "🇺🇿 Ўзбекистон": {
+        "code": "UZ",
+        "currency": "сўм",
+        "cities": [
+            "Тошкент",
+            "Самарқанд",
+            "Андижон",
+            "Наманган",
+            "Фарғона",
+            "Бухоро",
+            "Қарши",
+            "Нукус",
+        ],
+    },
+}
+
+
+# ============================================================
 # CONVERSATION STATES
 # ============================================================
 
-WORKER_NAME = 0
-WORKER_PHONE = 1
-WORKER_SERVICE = 2
-WORKER_AREA = 3
-WORKER_PRICE = 4
+# Worker registration
+WORKER_COUNTRY = 0
+WORKER_CITY = 1
+WORKER_NAME = 2
+WORKER_PHONE = 3
+WORKER_SERVICE = 4
+WORKER_AREA = 5
+WORKER_PRICE = 6
 
-ORDER_NAME = 5
-ORDER_PHONE = 6
-ORDER_ADDRESS = 7
-ORDER_PROBLEM = 8
+# Customer order
+ORDER_COUNTRY = 10
+ORDER_CITY = 11
+ORDER_NAME = 12
+ORDER_PHONE = 13
+ORDER_ADDRESS = 14
+ORDER_PROBLEM = 15
 
-ANN_NAME = 9
-ANN_PHONE = 10
-ANN_SERVICE = 11
-ANN_ADDRESS = 12
-ANN_BUDGET = 13
-ANN_DETAILS = 14
+# Announcement
+ANN_COUNTRY = 20
+ANN_CITY = 21
+ANN_NAME = 22
+ANN_PHONE = 23
+ANN_SERVICE = 24
+ANN_ADDRESS = 25
+ANN_BUDGET = 26
+ANN_DETAILS = 27
 
-EDIT_WORKER_NAME = 20
-EDIT_WORKER_PHONE = 21
-EDIT_WORKER_SERVICE = 22
-EDIT_WORKER_AREA = 23
-EDIT_WORKER_PRICE = 24
+# Edit profile
+EDIT_WORKER_COUNTRY = 30
+EDIT_WORKER_CITY = 31
+EDIT_WORKER_NAME = 32
+EDIT_WORKER_PHONE = 33
+EDIT_WORKER_SERVICE = 34
+EDIT_WORKER_AREA = 35
+EDIT_WORKER_PRICE = 36
+
+# User location
+LOCATION_COUNTRY = 40
+LOCATION_CITY = 41
 
 
 # ============================================================
@@ -101,6 +149,13 @@ SERVICES = [
     "🧹 Уй тозалаш",
     "🪑 Мебель таъмири",
 ]
+
+
+SERVICE_PATTERN = (
+    r"^(?:"
+    + "|".join(re.escape(x) for x in SERVICES)
+    + r")$"
+)
 
 
 # ============================================================
@@ -119,6 +174,24 @@ def init_database():
         with conn.cursor() as cur:
 
             # ------------------------------------------------
+            # USERS
+            # ------------------------------------------------
+
+            cur.execute(
+                """
+                CREATE TABLE IF NOT EXISTS user_profiles (
+                    telegram_id BIGINT PRIMARY KEY,
+                    country_code TEXT,
+                    country_name TEXT,
+                    city TEXT,
+                    currency TEXT,
+                    created_at TIMESTAMPTZ DEFAULT NOW(),
+                    updated_at TIMESTAMPTZ DEFAULT NOW()
+                )
+                """
+            )
+
+            # ------------------------------------------------
             # WORKERS
             # ------------------------------------------------
 
@@ -134,6 +207,49 @@ def init_database():
                     price TEXT,
                     created_at TIMESTAMPTZ DEFAULT NOW()
                 )
+                """
+            )
+
+            cur.execute(
+                """
+                ALTER TABLE workers
+                ADD COLUMN IF NOT EXISTS is_active BOOLEAN DEFAULT TRUE
+                """
+            )
+
+            cur.execute(
+                """
+                ALTER TABLE workers
+                ADD COLUMN IF NOT EXISTS country_code TEXT
+                """
+            )
+
+            cur.execute(
+                """
+                ALTER TABLE workers
+                ADD COLUMN IF NOT EXISTS country_name TEXT
+                """
+            )
+
+            cur.execute(
+                """
+                ALTER TABLE workers
+                ADD COLUMN IF NOT EXISTS city TEXT
+                """
+            )
+
+            cur.execute(
+                """
+                ALTER TABLE workers
+                ADD COLUMN IF NOT EXISTS currency TEXT
+                """
+            )
+
+            cur.execute(
+                """
+                UPDATE workers
+                SET is_active = TRUE
+                WHERE is_active IS NULL
                 """
             )
 
@@ -155,49 +271,6 @@ def init_database():
                 )
                 """
             )
-
-            # ------------------------------------------------
-            # ANNOUNCEMENTS
-            # ------------------------------------------------
-
-            cur.execute(
-                """
-                CREATE TABLE IF NOT EXISTS announcements (
-                    id BIGINT GENERATED BY DEFAULT AS IDENTITY PRIMARY KEY,
-                    telegram_id BIGINT,
-                    name TEXT,
-                    phone TEXT,
-                    service TEXT,
-                    address TEXT,
-                    budget TEXT,
-                    details TEXT,
-                    created_at TIMESTAMPTZ DEFAULT NOW()
-                )
-                """
-            )
-
-            # ------------------------------------------------
-            # WORKER ACTIVE STATUS
-            # ------------------------------------------------
-
-            cur.execute(
-                """
-                ALTER TABLE workers
-                ADD COLUMN IF NOT EXISTS is_active BOOLEAN DEFAULT TRUE
-                """
-            )
-
-            cur.execute(
-                """
-                UPDATE workers
-                SET is_active = TRUE
-                WHERE is_active IS NULL
-                """
-            )
-
-            # ------------------------------------------------
-            # ORDER STATUS
-            # ------------------------------------------------
 
             cur.execute(
                 """
@@ -229,19 +302,189 @@ def init_database():
 
             cur.execute(
                 """
+                ALTER TABLE orders
+                ADD COLUMN IF NOT EXISTS country_code TEXT
+                """
+            )
+
+            cur.execute(
+                """
+                ALTER TABLE orders
+                ADD COLUMN IF NOT EXISTS country_name TEXT
+                """
+            )
+
+            cur.execute(
+                """
+                ALTER TABLE orders
+                ADD COLUMN IF NOT EXISTS city TEXT
+                """
+            )
+
+            cur.execute(
+                """
+                ALTER TABLE orders
+                ADD COLUMN IF NOT EXISTS currency TEXT
+                """
+            )
+
+            cur.execute(
+                """
                 UPDATE orders
                 SET status = 'new'
                 WHERE status IS NULL
                 """
             )
 
+            # ------------------------------------------------
+            # ANNOUNCEMENTS
+            # ------------------------------------------------
+
+            cur.execute(
+                """
+                CREATE TABLE IF NOT EXISTS announcements (
+                    id BIGINT GENERATED BY DEFAULT AS IDENTITY PRIMARY KEY,
+                    telegram_id BIGINT,
+                    name TEXT,
+                    phone TEXT,
+                    service TEXT,
+                    address TEXT,
+                    budget TEXT,
+                    details TEXT,
+                    created_at TIMESTAMPTZ DEFAULT NOW()
+                )
+                """
+            )
+
+            cur.execute(
+                """
+                ALTER TABLE announcements
+                ADD COLUMN IF NOT EXISTS country_code TEXT
+                """
+            )
+
+            cur.execute(
+                """
+                ALTER TABLE announcements
+                ADD COLUMN IF NOT EXISTS country_name TEXT
+                """
+            )
+
+            cur.execute(
+                """
+                ALTER TABLE announcements
+                ADD COLUMN IF NOT EXISTS city TEXT
+                """
+            )
+
+            cur.execute(
+                """
+                ALTER TABLE announcements
+                ADD COLUMN IF NOT EXISTS currency TEXT
+                """
+            )
+
+            # ------------------------------------------------
+            # INDEXES
+            # ------------------------------------------------
+
+            cur.execute(
+                """
+                CREATE INDEX IF NOT EXISTS
+                idx_workers_telegram_id
+                ON workers(telegram_id)
+                """
+            )
+
+            cur.execute(
+                """
+                CREATE INDEX IF NOT EXISTS
+                idx_workers_city_country
+                ON workers(country_code, city)
+                """
+            )
+
+            cur.execute(
+                """
+                CREATE INDEX IF NOT EXISTS
+                idx_orders_status
+                ON orders(status)
+                """
+            )
+
         conn.commit()
 
-    logger.info("Database initialized successfully")
+    logger.info(
+        "Database initialized successfully"
+    )
 
 
 # ============================================================
-# SERVICE NORMALIZATION
+# USER PROFILE / LOCATION
+# ============================================================
+
+def save_user_location(
+    telegram_id,
+    country_name,
+    city,
+):
+    country = COUNTRIES[country_name]
+
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO user_profiles
+                (
+                    telegram_id,
+                    country_code,
+                    country_name,
+                    city,
+                    currency,
+                    updated_at
+                )
+                VALUES (%s,%s,%s,%s,%s,NOW())
+                ON CONFLICT (telegram_id)
+                DO UPDATE SET
+                    country_code=EXCLUDED.country_code,
+                    country_name=EXCLUDED.country_name,
+                    city=EXCLUDED.city,
+                    currency=EXCLUDED.currency,
+                    updated_at=NOW()
+                """,
+                (
+                    telegram_id,
+                    country["code"],
+                    country_name,
+                    city,
+                    country["currency"],
+                ),
+            )
+
+        conn.commit()
+
+
+def get_user_location(telegram_id):
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT
+                    country_code,
+                    country_name,
+                    city,
+                    currency
+                FROM user_profiles
+                WHERE telegram_id=%s
+                """,
+                (telegram_id,),
+            )
+
+            return cur.fetchone()
+
+
+# ============================================================
+# NORMALIZATION
 # ============================================================
 
 def normalize_service_name(text):
@@ -250,7 +493,6 @@ def normalize_service_name(text):
 
     text = str(text).casefold()
 
-    # Remove emojis
     text = re.sub(
         r"[🔧⚡📱💻🧹🪑👨‍🔧]",
         "",
@@ -321,7 +563,6 @@ def canonical_service(text):
     if not normalized:
         return ""
 
-    # Computer
     if (
         "kompyuter" in normalized
         or "komyuter" in normalized
@@ -329,29 +570,24 @@ def canonical_service(text):
     ):
         return "kompyuter"
 
-    # Plumbing
     if (
         "santexnik" in normalized
         or "santehnik" in normalized
     ):
         return "santexnik"
 
-    # Electrician
     if "elektrik" in normalized:
         return "elektrik"
 
-    # Phone
     if "telefon" in normalized:
         return "telefon"
 
-    # Cleaning
     if (
         "uy tozalash" in normalized
         or "tozalash" in normalized
     ):
         return "tozalash"
 
-    # Furniture
     if "mebel" in normalized:
         return "mebel"
 
@@ -385,12 +621,39 @@ def service_matches(
 # KEYBOARDS
 # ============================================================
 
+def country_keyboard():
+    return ReplyKeyboardMarkup(
+        [
+            ["🇰🇬 Қирғизистон"],
+            ["🇺🇿 Ўзбекистон"],
+        ],
+        resize_keyboard=True,
+    )
+
+
+def city_keyboard(country_name):
+    cities = COUNTRIES[country_name]["cities"]
+
+    rows = []
+
+    for i in range(0, len(cities), 2):
+        rows.append(cities[i:i + 2])
+
+    rows.append(["✍️ Бошқа шаҳар"])
+
+    return ReplyKeyboardMarkup(
+        rows,
+        resize_keyboard=True,
+    )
+
+
 def main_keyboard():
     return ReplyKeyboardMarkup(
         [
             ["🔧 Хизматлар", "👨‍🔧 Уста чақириш"],
             ["📢 Эълон бериш", "Алоқа"],
             ["👤 Менинг профилим"],
+            ["🌍 Давлат/шаҳар"],
         ],
         resize_keyboard=True,
     )
@@ -429,11 +692,127 @@ async def start(
 ):
     context.user_data.clear()
 
+    location = get_user_location(
+        update.effective_user.id
+    )
+
+    if location:
+        await update.message.reply_text(
+            "🛠 Osh Service ботга хуш келибсиз!\n\n"
+            f"🌍 Давлат: {location[1]}\n"
+            f"🏙 Шаҳар: {location[2]}\n\n"
+            "Керакли хизматни танланг:",
+            reply_markup=main_keyboard(),
+        )
+        return
+
     await update.message.reply_text(
         "🛠 Osh Service ботга хуш келибсиз!\n\n"
-        "Керакли хизматни танланг:",
+        "🌍 Аввало давлатингизни танланг:",
+        reply_markup=country_keyboard(),
+    )
+
+
+# ============================================================
+# LOCATION CHANGE
+# ============================================================
+
+async def location_start(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+):
+    context.user_data.pop(
+        "location_data",
+        None,
+    )
+
+    await update.message.reply_text(
+        "🌍 Давлатни танланг:",
+        reply_markup=country_keyboard(),
+    )
+
+    return LOCATION_COUNTRY
+
+
+async def location_country(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+):
+    country = update.message.text.strip()
+
+    if country not in COUNTRIES:
+        await update.message.reply_text(
+            "❗ Давлатни тугмадан танланг:",
+            reply_markup=country_keyboard(),
+        )
+        return LOCATION_COUNTRY
+
+    context.user_data["location_data"] = {
+        "country": country,
+    }
+
+    await update.message.reply_text(
+        f"{country}\n\n"
+        "🏙 Шаҳарни танланг:",
+        reply_markup=city_keyboard(country),
+    )
+
+    return LOCATION_CITY
+
+
+async def location_city(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+):
+    city = update.message.text.strip()
+
+    data = context.user_data.get(
+        "location_data"
+    )
+
+    if not data:
+        await update.message.reply_text(
+            "⚠️ Жараён қайта бошланди.\n"
+            "Давлатни танланг:",
+            reply_markup=country_keyboard(),
+        )
+        return LOCATION_COUNTRY
+
+    country = data["country"]
+
+    if city == "✍️ Бошқа шаҳар":
+        await update.message.reply_text(
+            "🏙 Шаҳар номини ёзинг:"
+        )
+        return LOCATION_CITY
+
+    if city not in COUNTRIES[country]["cities"]:
+        # Allow custom city
+        if not city:
+            await update.message.reply_text(
+                "❗ Шаҳар номини ёзинг:"
+            )
+            return LOCATION_CITY
+
+    save_user_location(
+        update.effective_user.id,
+        country,
+        city,
+    )
+
+    currency = COUNTRIES[country]["currency"]
+
+    context.user_data.clear()
+
+    await update.message.reply_text(
+        "✅ Жойлашув сақланди!\n\n"
+        f"🌍 Давлат: {country}\n"
+        f"🏙 Шаҳар: {city}\n"
+        f"💰 Валюта: {currency}",
         reply_markup=main_keyboard(),
     )
+
+    return ConversationHandler.END
 
 
 # ============================================================
@@ -446,11 +825,12 @@ async def help_command(
 ):
     await update.message.reply_text(
         "ℹ️ Osh Service\n\n"
-        "🔧 Хизматлар — мавжуд хизматлар\n"
+        "🔧 Хизматлар — хизмат буюртма қилиш\n"
         "👨‍🔧 Уста чақириш — уста бўлиб рўйхатдан ўтиш\n"
-        "📢 Эълон бериш — хизмат/иш ҳақида эълон\n"
+        "📢 Эълон бериш — эълон қолдириш\n"
         "👤 Менинг профилим — уста профили\n"
-        "Алоқа — администратор билан боғланиш\n\n"
+        "🌍 Давлат/шаҳар — жойлашувни ўзгартириш\n"
+        "Алоқа — администратор\n\n"
         "/workers — усталар\n"
         "/orders — буюртмалар\n"
         "/stats — статистика"
@@ -465,8 +845,22 @@ async def show_services(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE,
 ):
+    location = get_user_location(
+        update.effective_user.id
+    )
+
+    if not location:
+        await update.message.reply_text(
+            "🌍 Аввало давлат ва шаҳарни танланг.",
+            reply_markup=country_keyboard(),
+        )
+        return
+
     await update.message.reply_text(
-        "🔧 Хизматлар:",
+        f"🔧 Хизматлар\n\n"
+        f"🌍 {location[1]}\n"
+        f"🏙 {location[2]}\n\n"
+        "Хизматни танланг:",
         reply_markup=services_keyboard(),
     )
 
@@ -506,6 +900,71 @@ async def worker_register_start(
 
     await update.message.reply_text(
         "👨‍🔧 Уста бўлиб рўйхатдан ўтиш\n\n"
+        "🌍 Давлатни танланг:",
+        reply_markup=country_keyboard(),
+    )
+
+    return WORKER_COUNTRY
+
+
+async def worker_country(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+):
+    country = update.message.text.strip()
+
+    if country not in COUNTRIES:
+        await update.message.reply_text(
+            "❗ Давлатни тугмадан танланг:",
+            reply_markup=country_keyboard(),
+        )
+        return WORKER_COUNTRY
+
+    context.user_data["worker_data"] = {
+        "country": country,
+    }
+
+    await update.message.reply_text(
+        "🏙 Шаҳарни танланг:",
+        reply_markup=city_keyboard(country),
+    )
+
+    return WORKER_CITY
+
+
+async def worker_city(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+):
+    city = update.message.text.strip()
+
+    data = context.user_data.get(
+        "worker_data"
+    )
+
+    if not data:
+        await update.message.reply_text(
+            "⚠️ Жараён бузилди. Қайта бошланг."
+        )
+        return ConversationHandler.END
+
+    country = data["country"]
+
+    if city == "✍️ Бошқа шаҳар":
+        await update.message.reply_text(
+            "🏙 Шаҳар номини ёзинг:"
+        )
+        return WORKER_CITY
+
+    if not city:
+        await update.message.reply_text(
+            "❗ Шаҳарни ёзинг:"
+        )
+        return WORKER_CITY
+
+    data["city"] = city
+
+    await update.message.reply_text(
         "👤 Исмингизни ёзинг:"
     )
 
@@ -524,7 +983,9 @@ async def worker_name(
         )
         return WORKER_NAME
 
-    context.user_data["worker_name"] = name
+    context.user_data[
+        "worker_data"
+    ]["name"] = name
 
     await update.message.reply_text(
         "📞 Телефон рақамингизни ёзинг:"
@@ -545,7 +1006,9 @@ async def worker_phone(
         )
         return WORKER_PHONE
 
-    context.user_data["worker_phone"] = phone
+    context.user_data[
+        "worker_data"
+    ]["phone"] = phone
 
     await update.message.reply_text(
         "🔧 Қайси хизматни кўрсатасиз?",
@@ -567,10 +1030,12 @@ async def worker_service(
         )
         return WORKER_SERVICE
 
-    context.user_data["worker_service"] = service
+    context.user_data[
+        "worker_data"
+    ]["service"] = service
 
     await update.message.reply_text(
-        "📍 Ҳудудингизни ёзинг:"
+        "📍 Ҳудуд/маҳаллангизни ёзинг:"
     )
 
     return WORKER_AREA
@@ -588,10 +1053,19 @@ async def worker_area(
         )
         return WORKER_AREA
 
-    context.user_data["worker_area"] = area
+    context.user_data[
+        "worker_data"
+    ]["area"] = area
+
+    data = context.user_data["worker_data"]
+
+    currency = COUNTRIES[
+        data["country"]
+    ]["currency"]
 
     await update.message.reply_text(
-        "💰 Хизмат нархингизни ёзинг:"
+        f"💰 Хизмат нархингизни ёзинг.\n"
+        f"Валюта: {currency}"
     )
 
     return WORKER_PRICE
@@ -609,10 +1083,17 @@ async def worker_price(
         )
         return WORKER_PRICE
 
-    context.user_data["worker_price"] = price
+    data = context.user_data[
+        "worker_data"
+    ]
 
-    data = context.user_data
+    data["price"] = price
+
     user = update.effective_user
+
+    country_info = COUNTRIES[
+        data["country"]
+    ]
 
     with get_connection() as conn:
         with conn.cursor() as cur:
@@ -641,15 +1122,23 @@ async def worker_price(
                         service=%s,
                         area=%s,
                         price=%s,
+                        country_code=%s,
+                        country_name=%s,
+                        city=%s,
+                        currency=%s,
                         is_active=TRUE
                     WHERE id=%s
                     """,
                     (
-                        data["worker_name"],
-                        data["worker_phone"],
-                        data["worker_service"],
-                        data["worker_area"],
-                        data["worker_price"],
+                        data["name"],
+                        data["phone"],
+                        data["service"],
+                        data["area"],
+                        data["price"],
+                        country_info["code"],
+                        data["country"],
+                        data["city"],
+                        country_info["currency"],
                         existing[0],
                     ),
                 )
@@ -666,17 +1155,28 @@ async def worker_price(
                         service,
                         area,
                         price,
+                        country_code,
+                        country_name,
+                        city,
+                        currency,
                         is_active
                     )
-                    VALUES (%s,%s,%s,%s,%s,%s,TRUE)
+                    VALUES
+                    (
+                        %s,%s,%s,%s,%s,%s,%s,%s,%s,%s,TRUE
+                    )
                     """,
                     (
                         user.id,
-                        data["worker_name"],
-                        data["worker_phone"],
-                        data["worker_service"],
-                        data["worker_area"],
-                        data["worker_price"],
+                        data["name"],
+                        data["phone"],
+                        data["service"],
+                        data["area"],
+                        data["price"],
+                        country_info["code"],
+                        data["country"],
+                        data["city"],
+                        country_info["currency"],
                     ),
                 )
 
@@ -684,11 +1184,14 @@ async def worker_price(
 
     await update.message.reply_text(
         "✅ Уста профилингиз сақланди!\n\n"
-        f"👤 Исм: {data['worker_name']}\n"
-        f"📞 Телефон: {data['worker_phone']}\n"
-        f"🔧 Хизмат: {data['worker_service']}\n"
-        f"📍 Ҳудуд: {data['worker_area']}\n"
-        f"💰 Нархи: {data['worker_price']}\n"
+        f"🌍 Давлат: {data['country']}\n"
+        f"🏙 Шаҳар: {data['city']}\n"
+        f"👤 Исм: {data['name']}\n"
+        f"📞 Телефон: {data['phone']}\n"
+        f"🔧 Хизмат: {data['service']}\n"
+        f"📍 Ҳудуд: {data['area']}\n"
+        f"💰 Нархи: {data['price']} "
+        f"{country_info['currency']}\n"
         "🟢 Ҳолат: Фаол",
         reply_markup=main_keyboard(),
     )
@@ -715,20 +1218,29 @@ async def order_from_service(
         )
         return ORDER_NAME
 
-    # IMPORTANT:
-    # Do NOT use context.user_data.clear()
-    # because the conversation can lose order data.
-    context.user_data.pop(
-        "order_data",
-        None,
+    location = get_user_location(
+        update.effective_user.id
     )
+
+    if not location:
+        await update.message.reply_text(
+            "🌍 Аввало давлат ва шаҳарни танланг.",
+            reply_markup=country_keyboard(),
+        )
+        return ConversationHandler.END
 
     context.user_data["order_data"] = {
         "service": service,
+        "country_code": location[0],
+        "country": location[1],
+        "city": location[2],
+        "currency": location[3],
     }
 
     await update.message.reply_text(
-        f"✅ Хизмат: {service}\n\n"
+        f"✅ Хизмат: {service}\n"
+        f"🌍 Давлат: {location[1]}\n"
+        f"🏙 Шаҳар: {location[2]}\n\n"
         "👤 Исмингизни ёзинг:"
     )
 
@@ -747,19 +1259,18 @@ async def customer_name(
         )
         return ORDER_NAME
 
-    order_data = context.user_data.get(
+    data = context.user_data.get(
         "order_data"
     )
 
-    if not order_data:
+    if not data:
         await update.message.reply_text(
-            "⚠️ Буюртма жараёни бузилди.\n\n"
-            "Илтимос, хизматни қайта танланг.",
-            reply_markup=services_keyboard(),
+            "⚠️ Буюртма жараёни бузилди.\n"
+            "Қайтадан бошланг."
         )
         return ConversationHandler.END
 
-    order_data["name"] = name
+    data["name"] = name
 
     await update.message.reply_text(
         "📞 Телефон рақамингизни ёзинг:"
@@ -774,25 +1285,22 @@ async def customer_phone(
 ):
     phone = update.message.text.strip()
 
-    if len(re.sub(r"\D", "", phone)) < 7:
+    digits = re.sub(r"\D", "", phone)
+
+    if len(digits) < 7:
         await update.message.reply_text(
             "❗ Телефон рақами нотўғри. Қайта ёзинг:"
         )
         return ORDER_PHONE
 
-    order_data = context.user_data.get(
+    data = context.user_data.get(
         "order_data"
     )
 
-    if not order_data:
-        await update.message.reply_text(
-            "⚠️ Буюртма жараёни бузилди.\n\n"
-            "Илтимос, хизматни қайта танланг.",
-            reply_markup=services_keyboard(),
-        )
+    if not data:
         return ConversationHandler.END
 
-    order_data["phone"] = phone
+    data["phone"] = phone
 
     await update.message.reply_text(
         "📍 Манзилингизни ёзинг:"
@@ -813,19 +1321,14 @@ async def customer_address(
         )
         return ORDER_ADDRESS
 
-    order_data = context.user_data.get(
+    data = context.user_data.get(
         "order_data"
     )
 
-    if not order_data:
-        await update.message.reply_text(
-            "⚠️ Буюртма жараёни бузилди.\n\n"
-            "Илтимос, хизматни қайта танланг.",
-            reply_markup=services_keyboard(),
-        )
+    if not data:
         return ConversationHandler.END
 
-    order_data["address"] = address
+    data["address"] = address
 
     await update.message.reply_text(
         "📝 Муаммони қисқача ёзинг:"
@@ -846,49 +1349,42 @@ async def customer_problem(
         )
         return ORDER_PROBLEM
 
-    order_data = context.user_data.get(
+    data = context.user_data.get(
         "order_data"
     )
 
-    if not order_data:
+    if not data:
         await update.message.reply_text(
-            "⚠️ Буюртма маълумотлари топилмади.\n\n"
-            "Илтимос, хизматни қайта танлаб, "
-            "буюртмани бошидан беринг.",
-            reply_markup=services_keyboard(),
+            "⚠️ Буюртма маълумотлари топилмади.\n"
+            "Қайтадан буюртма беринг.",
+            reply_markup=main_keyboard(),
         )
         return ConversationHandler.END
 
     required = [
         "service",
+        "country_code",
+        "country",
+        "city",
+        "currency",
         "name",
         "phone",
         "address",
     ]
 
-    if not all(
-        order_data.get(key)
-        for key in required
-    ):
+    if not all(data.get(x) for x in required):
+        await update.message.reply_text(
+            "⚠️ Буюртма маълумотлари тўлиқ эмас.\n"
+            "Қайтадан буюртма беринг.",
+            reply_markup=main_keyboard(),
+        )
         context.user_data.pop(
             "order_data",
             None,
         )
-
-        await update.message.reply_text(
-            "⚠️ Буюртма маълумотлари тўлиқ эмас.\n\n"
-            "Илтимос, буюртмани қайта беринг.",
-            reply_markup=services_keyboard(),
-        )
-
         return ConversationHandler.END
 
     user = update.effective_user
-
-    service = order_data["service"]
-    customer_name_value = order_data["name"]
-    customer_phone_value = order_data["phone"]
-    customer_address_value = order_data["address"]
 
     # --------------------------------------------------------
     # SAVE ORDER
@@ -907,24 +1403,39 @@ async def customer_problem(
                     service,
                     address,
                     problem,
-                    status
+                    status,
+                    country_code,
+                    country_name,
+                    city,
+                    currency
                 )
-                VALUES (%s,%s,%s,%s,%s,%s,'new')
+                VALUES
+                (
+                    %s,%s,%s,%s,%s,%s,'new',
+                    %s,%s,%s,%s
+                )
                 RETURNING id
                 """,
                 (
                     user.id,
-                    customer_name_value,
-                    customer_phone_value,
-                    service,
-                    customer_address_value,
+                    data["name"],
+                    data["phone"],
+                    data["service"],
+                    data["address"],
                     problem,
+                    data["country_code"],
+                    data["country"],
+                    data["city"],
+                    data["currency"],
                 ),
             )
 
             order_id = cur.fetchone()[0]
 
-            # ONLY ACTIVE WORKERS
+            # ------------------------------------------------
+            # ONLY SAME COUNTRY + SAME CITY + ACTIVE
+            # ------------------------------------------------
+
             cur.execute(
                 """
                 SELECT
@@ -932,12 +1443,19 @@ async def customer_problem(
                     name,
                     service,
                     area,
-                    price
+                    price,
+                    currency
                 FROM workers
-                WHERE COALESCE(is_active, TRUE) = TRUE
+                WHERE COALESCE(is_active, TRUE)=TRUE
                   AND telegram_id IS NOT NULL
+                  AND country_code=%s
+                  AND city=%s
                 ORDER BY id DESC
-                """
+                """,
+                (
+                    data["country_code"],
+                    data["city"],
+                ),
             )
 
             workers = cur.fetchall()
@@ -945,15 +1463,17 @@ async def customer_problem(
         conn.commit()
 
     # --------------------------------------------------------
-    # NOTIFY MATCHING WORKERS
+    # WORKER MESSAGE
     # --------------------------------------------------------
 
     message = (
         f"🔔 ЯНГИ БУЮРТМА #{order_id}\n\n"
-        f"🔧 Хизмат: {service}\n"
-        f"👤 Мижоз: {customer_name_value}\n"
-        f"📞 Телефон: {customer_phone_value}\n"
-        f"📍 Манзил: {customer_address_value}\n"
+        f"🌍 Давлат: {data['country']}\n"
+        f"🏙 Шаҳар: {data['city']}\n"
+        f"🔧 Хизмат: {data['service']}\n"
+        f"👤 Мижоз: {data['name']}\n"
+        f"📞 Телефон: {data['phone']}\n"
+        f"📍 Манзил: {data['address']}\n"
         f"📝 Муаммо: {problem}\n\n"
         "Буюртмани олиш учун тугмани босинг."
     )
@@ -967,6 +1487,7 @@ async def customer_problem(
         worker_service,
         worker_area,
         worker_price,
+        worker_currency,
     ) in workers:
 
         if not worker_telegram_id:
@@ -976,16 +1497,16 @@ async def customer_problem(
             continue
 
         if not service_matches(
-            service,
+            data["service"],
             worker_service,
         ):
             logger.info(
-                "Order #%s: service mismatch. "
-                "Worker=%s, service=%s, requested=%s",
+                "Order #%s service mismatch: "
+                "worker=%s service=%s requested=%s",
                 order_id,
                 worker_name,
                 worker_service,
-                service,
+                data["service"],
             )
             continue
 
@@ -1038,13 +1559,16 @@ async def customer_problem(
     # CUSTOMER CONFIRMATION
     # --------------------------------------------------------
 
-    if notified_count > 0:
+    if notified_count:
 
         confirmation = (
             f"✅ Буюртмангиз қабул қилинди!\n\n"
-            f"Буюртма рақами: #{order_id}\n"
-            f"👨‍🔧 {notified_count} та фаол "
-            f"устага хабар юборилди.\n\n"
+            f"Буюртма: #{order_id}\n"
+            f"🌍 {data['country']}\n"
+            f"🏙 {data['city']}\n"
+            f"🔧 {data['service']}\n\n"
+            f"👨‍🔧 {notified_count} та мос фаол "
+            "устага хабар юборилди.\n\n"
             "Уста қабул қилса, сизга "
             "унинг маълумотлари келади."
         )
@@ -1053,9 +1577,11 @@ async def customer_problem(
 
         confirmation = (
             f"✅ Буюртмангиз қабул қилинди!\n\n"
-            f"Буюртма рақами: #{order_id}\n\n"
-            "⚠️ Ҳозирча бу хизмат бўйича "
-            "фаол уста топилмади."
+            f"Буюртма: #{order_id}\n"
+            f"🌍 {data['country']}\n"
+            f"🏙 {data['city']}\n\n"
+            "⚠️ Ҳозирча бу шаҳарда "
+            "мос фаол уста топилмади."
         )
 
     await update.message.reply_text(
@@ -1090,18 +1616,16 @@ async def accept_order_callback(
             query.data.split(":", 1)[1]
         )
     except Exception:
-
         await query.message.reply_text(
             "❗ Буюртма рақами нотўғри."
         )
-
         return
 
     with get_connection() as conn:
         with conn.cursor() as cur:
 
             # ------------------------------------------------
-            # FIND WORKER
+            # WORKER
             # ------------------------------------------------
 
             cur.execute(
@@ -1122,22 +1646,16 @@ async def accept_order_callback(
             worker = cur.fetchone()
 
             if not worker:
-
                 await query.message.reply_text(
-                    "❗ Сизда уста профили "
-                    "мавжуд эмас."
+                    "❗ Уста профилингиз топилмади."
                 )
-
                 return
 
             if worker[3] is False:
-
                 await query.message.reply_text(
                     "🔴 Профилингиз нофаол.\n\n"
-                    "Янги буюртмаларни "
-                    "қабул қила олмайсиз."
+                    "Янги буюртмани қабул қила олмайсиз."
                 )
-
                 return
 
             worker_id = worker[0]
@@ -1145,7 +1663,7 @@ async def accept_order_callback(
             worker_phone = worker[2]
 
             # ------------------------------------------------
-            # ACCEPT ONLY NEW ORDER
+            # ACCEPT ONLY NEW
             # ------------------------------------------------
 
             cur.execute(
@@ -1158,18 +1676,32 @@ async def accept_order_callback(
                     accepted_at=NOW()
                 WHERE id=%s
                   AND status='new'
+                  AND country_code=(
+                      SELECT country_code
+                      FROM workers
+                      WHERE id=%s
+                  )
+                  AND city=(
+                      SELECT city
+                      FROM workers
+                      WHERE id=%s
+                  )
                 RETURNING
                     telegram_id,
                     name,
                     phone,
                     service,
                     address,
-                    problem
+                    problem,
+                    country_name,
+                    city
                 """,
                 (
                     worker_id,
                     worker_name,
                     order_id,
+                    worker_id,
+                    worker_id,
                 ),
             )
 
@@ -1177,16 +1709,12 @@ async def accept_order_callback(
 
         conn.commit()
 
-    # --------------------------------------------------------
-    # ORDER ALREADY ACCEPTED
-    # --------------------------------------------------------
-
     if not order:
 
         await query.message.reply_text(
-            "⚠️ Бу буюртма аллақачон "
-            "бошқа уста томонидан қабул "
-            "қилинган."
+            "⚠️ Бу буюртма аллақачон қабул қилинган "
+            "ёки сиз бу буюртма шаҳри/давлатига "
+            "мос уста эмассиз."
         )
 
         try:
@@ -1198,44 +1726,33 @@ async def accept_order_callback(
 
         return
 
-    # --------------------------------------------------------
-    # ORDER DATA
-    # --------------------------------------------------------
-
     customer_id = order[0]
     customer_name = order[1]
     customer_phone = order[2]
     service = order[3]
     address = order[4]
     problem = order[5]
+    country = order[6]
+    city = order[7]
 
-    # Remove accept button
     try:
-
         await query.edit_message_reply_markup(
             reply_markup=None
         )
-
     except Exception:
         pass
-
-    # --------------------------------------------------------
-    # WORKER CONFIRMATION
-    # --------------------------------------------------------
 
     await query.message.reply_text(
         f"✅ Буюртма #{order_id} "
         "сиз томонингиздан қабул қилинди!\n\n"
         f"👤 Мижоз: {customer_name}\n"
         f"📞 Мижоз телефони: {customer_phone}\n"
+        f"🌍 Давлат: {country}\n"
+        f"🏙 Шаҳар: {city}\n"
         f"🔧 Хизмат: {service}\n"
         f"📍 Манзил: {address}\n"
         f"📝 Муаммо: {problem}"
     )
-
-    # --------------------------------------------------------
-    # CUSTOMER NOTIFICATION
-    # --------------------------------------------------------
 
     try:
 
@@ -1245,22 +1762,17 @@ async def accept_order_callback(
                 "✅ БУЮРТМАНГИЗНИ УСТА ҚАБУЛ ҚИЛДИ!\n\n"
                 f"👨‍🔧 Уста: {worker_name}\n"
                 f"📞 Устанинг рақами: {worker_phone}\n\n"
+                f"🌍 Давлат: {country}\n"
+                f"🏙 Шаҳар: {city}\n"
                 f"🔧 Хизмат: {service}\n"
                 f"📍 Манзил: {address}"
             ),
         )
 
-        logger.info(
-            "✅ Customer %s notified about "
-            "accepted order #%s",
-            customer_id,
-            order_id,
-        )
-
     except Exception as exc:
 
         logger.exception(
-            "❌ Customer notification failed: %s",
+            "Customer notification failed: %s",
             exc,
         )
 
@@ -1287,6 +1799,9 @@ async def my_profile(
                     service,
                     area,
                     price,
+                    country_name,
+                    city,
+                    currency,
                     created_at,
                     COALESCE(is_active, TRUE)
                 FROM workers
@@ -1301,19 +1816,19 @@ async def my_profile(
 
     if not worker:
 
-        if update.callback_query:
+        text = (
+            "❗ Сиз ҳали уста сифатида "
+            "рўйхатдан ўтмагансиз."
+        )
 
+        if update.callback_query:
             await update.callback_query.message.reply_text(
-                "❗ Сиз ҳали уста сифатида "
-                "рўйхатдан ўтмагансиз.",
+                text,
                 reply_markup=main_keyboard(),
             )
-
         else:
-
             await update.message.reply_text(
-                "❗ Сиз ҳали уста сифатида "
-                "рўйхатдан ўтмагансиз.",
+                text,
                 reply_markup=main_keyboard(),
             )
 
@@ -1326,6 +1841,9 @@ async def my_profile(
         service,
         area,
         price,
+        country,
+        city,
+        currency,
         created_at,
         is_active,
     ) = worker
@@ -1369,13 +1887,16 @@ async def my_profile(
 
     text = (
         "👤 МЕНИНГ ПРОФИЛИМ\n\n"
+        f"🌍 Давлат: {country or '-'}\n"
+        f"🏙 Шаҳар: {city or '-'}\n"
         f"👤 Исм: {name}\n"
         f"📞 Телефон: {phone}\n"
         f"🔧 Хизмат: {service}\n"
         f"📍 Ҳудуд: {area}\n"
-        f"💰 Нархи: {price}\n"
+        f"💰 Нархи: {price} "
+        f"{currency or ''}\n"
         f"📌 Ҳолат: {status}\n"
-        f"🕐 Рўйхатдан ўтган: {created_at}\n"
+        f"🕐 Рўйхатдан ўтган: {created_at}"
     )
 
     if update.callback_query:
@@ -1413,6 +1934,8 @@ async def start_edit_profile(
             cur.execute(
                 """
                 SELECT
+                    country_name,
+                    city,
                     name,
                     phone,
                     service,
@@ -1440,8 +1963,63 @@ async def start_edit_profile(
 
     await query.message.reply_text(
         "✏️ Профилни таҳрирлаш\n\n"
-        f"Ҳозирги исм: {worker[0]}\n\n"
-        "Янги исмни ёзинг:"
+        f"Ҳозирги давлат: {worker[0] or '-'}\n\n"
+        "Янги давлатни танланг:",
+        reply_markup=country_keyboard(),
+    )
+
+    return EDIT_WORKER_COUNTRY
+
+
+async def edit_worker_country(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+):
+    country = update.message.text.strip()
+
+    if country not in COUNTRIES:
+        await update.message.reply_text(
+            "❗ Давлатни танланг:",
+            reply_markup=country_keyboard(),
+        )
+        return EDIT_WORKER_COUNTRY
+
+    context.user_data[
+        "edit_worker"
+    ]["country"] = country
+
+    await update.message.reply_text(
+        "🏙 Янги шаҳарни танланг:",
+        reply_markup=city_keyboard(country),
+    )
+
+    return EDIT_WORKER_CITY
+
+
+async def edit_worker_city(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+):
+    city = update.message.text.strip()
+
+    if city == "✍️ Бошқа шаҳар":
+        await update.message.reply_text(
+            "🏙 Шаҳар номини ёзинг:"
+        )
+        return EDIT_WORKER_CITY
+
+    if not city:
+        await update.message.reply_text(
+            "❗ Шаҳарни ёзинг:"
+        )
+        return EDIT_WORKER_CITY
+
+    context.user_data[
+        "edit_worker"
+    ]["city"] = city
+
+    await update.message.reply_text(
+        "👤 Янги исмингизни ёзинг:"
     )
 
     return EDIT_WORKER_NAME
@@ -1454,11 +2032,9 @@ async def edit_worker_name(
     text = update.message.text.strip()
 
     if not text:
-
         await update.message.reply_text(
             "❗ Исмни бўш қолдирманг."
         )
-
         return EDIT_WORKER_NAME
 
     context.user_data[
@@ -1479,12 +2055,9 @@ async def edit_worker_phone(
     phone = update.message.text.strip()
 
     if len(re.sub(r"\D", "", phone)) < 7:
-
         await update.message.reply_text(
-            "❗ Телефон рақами нотўғри. "
-            "Қайта ёзинг:"
+            "❗ Телефон рақами нотўғри."
         )
-
         return EDIT_WORKER_PHONE
 
     context.user_data[
@@ -1505,11 +2078,9 @@ async def edit_worker_service(
     service = update.message.text.strip()
 
     if not service:
-
         await update.message.reply_text(
             "❗ Хизматни бўш қолдирманг."
         )
-
         return EDIT_WORKER_SERVICE
 
     context.user_data[
@@ -1530,19 +2101,26 @@ async def edit_worker_area(
     area = update.message.text.strip()
 
     if not area:
-
         await update.message.reply_text(
             "❗ Ҳудудни бўш қолдирманг."
         )
-
         return EDIT_WORKER_AREA
 
     context.user_data[
         "edit_worker"
     ]["area"] = area
 
+    data = context.user_data[
+        "edit_worker"
+    ]
+
+    currency = COUNTRIES[
+        data["country"]
+    ]["currency"]
+
     await update.message.reply_text(
-        "💰 Янги хизмат нархингизни ёзинг:"
+        f"💰 Янги хизмат нархингизни ёзинг.\n"
+        f"Валюта: {currency}"
     )
 
     return EDIT_WORKER_PRICE
@@ -1555,11 +2133,9 @@ async def edit_worker_price(
     price = update.message.text.strip()
 
     if not price:
-
         await update.message.reply_text(
             "❗ Нарҳни бўш қолдирманг."
         )
-
         return EDIT_WORKER_PRICE
 
     data = context.user_data[
@@ -1569,6 +2145,10 @@ async def edit_worker_price(
     data["price"] = price
 
     user = update.effective_user
+
+    country_info = COUNTRIES[
+        data["country"]
+    ]
 
     with get_connection() as conn:
         with conn.cursor() as cur:
@@ -1581,7 +2161,11 @@ async def edit_worker_price(
                     phone=%s,
                     service=%s,
                     area=%s,
-                    price=%s
+                    price=%s,
+                    country_code=%s,
+                    country_name=%s,
+                    city=%s,
+                    currency=%s
                 WHERE id=(
                     SELECT id
                     FROM workers
@@ -1596,31 +2180,30 @@ async def edit_worker_price(
                     data["service"],
                     data["area"],
                     data["price"],
+                    country_info["code"],
+                    data["country"],
+                    data["city"],
+                    country_info["currency"],
                     user.id,
                 ),
             )
 
         conn.commit()
 
-    # Save values before clearing
-    name = data["name"]
-    phone = data["phone"]
-    service = data["service"]
-    area = data["area"]
-    price = data["price"]
-
-    context.user_data.clear()
-
     await update.message.reply_text(
-        "✅ Профилингиз муваффақиятли "
-        "янгиланди!\n\n"
-        f"👤 Исм: {name}\n"
-        f"📞 Телефон: {phone}\n"
-        f"🔧 Хизмат: {service}\n"
-        f"📍 Ҳудуд: {area}\n"
-        f"💰 Нархи: {price}",
+        "✅ Профилингиз муваффақиятли янгиланди!\n\n"
+        f"🌍 Давлат: {data['country']}\n"
+        f"🏙 Шаҳар: {data['city']}\n"
+        f"👤 Исм: {data['name']}\n"
+        f"📞 Телефон: {data['phone']}\n"
+        f"🔧 Хизмат: {data['service']}\n"
+        f"📍 Ҳудуд: {data['area']}\n"
+        f"💰 Нархи: {data['price']} "
+        f"{country_info['currency']}",
         reply_markup=main_keyboard(),
     )
+
+    context.user_data.clear()
 
     return ConversationHandler.END
 
@@ -1640,17 +2223,13 @@ async def toggle_worker_callback(
     user = update.effective_user
 
     try:
-
         worker_id = int(
             query.data.split(":")[1]
         )
-
     except Exception:
-
         await query.message.reply_text(
             "❗ Профил рақами нотўғри."
         )
-
         return
 
     with get_connection() as conn:
@@ -1679,11 +2258,9 @@ async def toggle_worker_callback(
         conn.commit()
 
     if not result:
-
         await query.message.reply_text(
             "❗ Профил топилмади."
         )
-
         return
 
     await my_profile(
@@ -1723,6 +2300,61 @@ async def announcement_start(
 
     await update.message.reply_text(
         "📢 Эълон бериш\n\n"
+        "🌍 Давлатни танланг:",
+        reply_markup=country_keyboard(),
+    )
+
+    return ANN_COUNTRY
+
+
+async def ann_country(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+):
+    country = update.message.text.strip()
+
+    if country not in COUNTRIES:
+        await update.message.reply_text(
+            "❗ Давлатни танланг:",
+            reply_markup=country_keyboard(),
+        )
+        return ANN_COUNTRY
+
+    context.user_data["ann_data"] = {
+        "country": country,
+    }
+
+    await update.message.reply_text(
+        "🏙 Шаҳарни танланг:",
+        reply_markup=city_keyboard(country),
+    )
+
+    return ANN_CITY
+
+
+async def ann_city(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+):
+    city = update.message.text.strip()
+
+    if city == "✍️ Бошқа шаҳар":
+        await update.message.reply_text(
+            "🏙 Шаҳар номини ёзинг:"
+        )
+        return ANN_CITY
+
+    if not city:
+        await update.message.reply_text(
+            "❗ Шаҳарни ёзинг:"
+        )
+        return ANN_CITY
+
+    context.user_data[
+        "ann_data"
+    ]["city"] = city
+
+    await update.message.reply_text(
         "👤 Исмингизни ёзинг:"
     )
 
@@ -1736,14 +2368,14 @@ async def ann_name(
     name = update.message.text.strip()
 
     if not name:
-
         await update.message.reply_text(
             "❗ Исмни бўш қолдирманг."
         )
-
         return ANN_NAME
 
-    context.user_data["ann_name"] = name
+    context.user_data[
+        "ann_data"
+    ]["name"] = name
 
     await update.message.reply_text(
         "📞 Телефон рақамингизни ёзинг:"
@@ -1759,19 +2391,17 @@ async def ann_phone(
     phone = update.message.text.strip()
 
     if len(re.sub(r"\D", "", phone)) < 7:
-
         await update.message.reply_text(
-            "❗ Телефон рақами нотўғри. "
-            "Қайта ёзинг:"
+            "❗ Телефон рақами нотўғри."
         )
-
         return ANN_PHONE
 
-    context.user_data["ann_phone"] = phone
+    context.user_data[
+        "ann_data"
+    ]["phone"] = phone
 
     await update.message.reply_text(
-        "🔧 Қайси хизмат/иш бўйича эълон?\n"
-        "Масалан: Электрик",
+        "🔧 Қайси хизмат/иш бўйича эълон?",
         reply_markup=worker_services_keyboard(),
     )
 
@@ -1785,16 +2415,14 @@ async def ann_service(
     service = update.message.text.strip()
 
     if not service:
-
         await update.message.reply_text(
             "❗ Хизматни киритинг."
         )
-
         return ANN_SERVICE
 
     context.user_data[
-        "ann_service"
-    ] = service
+        "ann_data"
+    ]["service"] = service
 
     await update.message.reply_text(
         "📍 Манзилни ёзинг:"
@@ -1810,19 +2438,24 @@ async def ann_address(
     address = update.message.text.strip()
 
     if not address:
-
         await update.message.reply_text(
             "❗ Манзилни бўш қолдирманг."
         )
-
         return ANN_ADDRESS
 
     context.user_data[
-        "ann_address"
-    ] = address
+        "ann_data"
+    ]["address"] = address
+
+    data = context.user_data["ann_data"]
+
+    currency = COUNTRIES[
+        data["country"]
+    ]["currency"]
 
     await update.message.reply_text(
-        "💰 Бюджет/нархни ёзинг:"
+        f"💰 Бюджет/нархни ёзинг.\n"
+        f"Валюта: {currency}"
     )
 
     return ANN_BUDGET
@@ -1835,16 +2468,14 @@ async def ann_budget(
     budget = update.message.text.strip()
 
     if not budget:
-
         await update.message.reply_text(
             "❗ Бюджетни киритинг."
         )
-
         return ANN_BUDGET
 
     context.user_data[
-        "ann_budget"
-    ] = budget
+        "ann_data"
+    ]["budget"] = budget
 
     await update.message.reply_text(
         "📝 Эълон тафсилотларини ёзинг:"
@@ -1860,19 +2491,22 @@ async def ann_details(
     details = update.message.text.strip()
 
     if not details:
-
         await update.message.reply_text(
             "❗ Тафсилотларни ёзинг."
         )
-
         return ANN_DETAILS
 
-    context.user_data[
-        "ann_details"
-    ] = details
+    data = context.user_data[
+        "ann_data"
+    ]
 
-    data = context.user_data
+    data["details"] = details
+
     user = update.effective_user
+
+    country_info = COUNTRIES[
+        data["country"]
+    ]
 
     with get_connection() as conn:
         with conn.cursor() as cur:
@@ -1887,29 +2521,37 @@ async def ann_details(
                     service,
                     address,
                     budget,
-                    details
+                    details,
+                    country_code,
+                    country_name,
+                    city,
+                    currency
                 )
-                VALUES (%s,%s,%s,%s,%s,%s,%s)
+                VALUES
+                (
+                    %s,%s,%s,%s,%s,%s,%s,
+                    %s,%s,%s,%s
+                )
                 RETURNING id
                 """,
                 (
                     user.id,
-                    data["ann_name"],
-                    data["ann_phone"],
-                    data["ann_service"],
-                    data["ann_address"],
-                    data["ann_budget"],
-                    data["ann_details"],
+                    data["name"],
+                    data["phone"],
+                    data["service"],
+                    data["address"],
+                    data["budget"],
+                    data["details"],
+                    country_info["code"],
+                    data["country"],
+                    data["city"],
+                    country_info["currency"],
                 ),
             )
 
             ann_id = cur.fetchone()[0]
 
         conn.commit()
-
-    # --------------------------------------------------------
-    # ADMIN NOTIFICATION
-    # --------------------------------------------------------
 
     if ADMIN_ID:
 
@@ -1919,12 +2561,15 @@ async def ann_details(
                 chat_id=ADMIN_ID,
                 text=(
                     f"📢 ЯНГИ ЭЪЛОН #{ann_id}\n\n"
-                    f"👤 {data['ann_name']}\n"
-                    f"📞 {data['ann_phone']}\n"
-                    f"🔧 {data['ann_service']}\n"
-                    f"📍 {data['ann_address']}\n"
-                    f"💰 {data['ann_budget']}\n"
-                    f"📝 {data['ann_details']}"
+                    f"🌍 {data['country']}\n"
+                    f"🏙 {data['city']}\n"
+                    f"👤 {data['name']}\n"
+                    f"📞 {data['phone']}\n"
+                    f"🔧 {data['service']}\n"
+                    f"📍 {data['address']}\n"
+                    f"💰 {data['budget']} "
+                    f"{country_info['currency']}\n"
+                    f"📝 {data['details']}"
                 ),
             )
 
@@ -1966,9 +2611,7 @@ async def contact(
 # ADMIN CHECK
 # ============================================================
 
-async def admin_only(
-    update: Update,
-):
+async def admin_only(update: Update):
     return (
         ADMIN_ID
         and update.effective_user
@@ -2000,8 +2643,10 @@ async def admin_workers(
                     service,
                     area,
                     price,
-                    COALESCE(is_active, TRUE),
-                    created_at
+                    country_name,
+                    city,
+                    currency,
+                    COALESCE(is_active, TRUE)
                 FROM workers
                 ORDER BY id DESC
                 """
@@ -2010,11 +2655,9 @@ async def admin_workers(
             rows = cur.fetchall()
 
     if not rows:
-
         await update.message.reply_text(
             "Усталар йўқ."
         )
-
         return
 
     lines = [
@@ -2031,15 +2674,21 @@ async def admin_workers(
             service,
             area,
             price,
+            country,
+            city,
+            currency,
             active,
-            created,
         ) = row
 
         status = "🟢" if active else "🔴"
 
         lines.append(
-            f"#{wid} {status} {name} — "
-            f"{service} — {area} — {price}\n"
+            f"#{wid} {status} {name}\n"
+            f"🌍 {country or '-'}\n"
+            f"🏙 {city or '-'}\n"
+            f"🔧 {service}\n"
+            f"📍 {area}\n"
+            f"💰 {price} {currency or ''}\n"
             f"📞 {phone}\n"
             f"🆔 {tid}"
         )
@@ -2066,26 +2715,20 @@ async def admin_stats(
             cur.execute(
                 "SELECT COUNT(*) FROM workers"
             )
-
             workers_count = cur.fetchone()[0]
 
             cur.execute(
                 """
                 SELECT COUNT(*)
                 FROM workers
-                WHERE COALESCE(
-                    is_active,
-                    TRUE
-                )=TRUE
+                WHERE COALESCE(is_active, TRUE)=TRUE
                 """
             )
-
             active_count = cur.fetchone()[0]
 
             cur.execute(
                 "SELECT COUNT(*) FROM orders"
             )
-
             orders_count = cur.fetchone()[0]
 
             cur.execute(
@@ -2095,7 +2738,6 @@ async def admin_stats(
                 WHERE status='new'
                 """
             )
-
             new_orders = cur.fetchone()[0]
 
             cur.execute(
@@ -2105,21 +2747,28 @@ async def admin_stats(
                 WHERE status='accepted'
                 """
             )
-
             accepted = cur.fetchone()[0]
 
             cur.execute(
                 "SELECT COUNT(*) FROM announcements"
             )
-
             announcements_count = cur.fetchone()[0]
+
+            cur.execute(
+                """
+                SELECT COUNT(*)
+                FROM user_profiles
+                """
+            )
+            users_count = cur.fetchone()[0]
 
     await update.message.reply_text(
         "📊 СТАТИСТИКА\n\n"
+        f"👤 Фойдаланувчилар: {users_count}\n"
         f"👨‍🔧 Усталар: {workers_count}\n"
         f"🟢 Фаол усталар: {active_count}\n"
         f"📦 Буюртмалар: {orders_count}\n"
-        f"🆕 Янги буюртмалар: {new_orders}\n"
+        f"🆕 Янги: {new_orders}\n"
         f"✅ Қабул қилинган: {accepted}\n"
         f"📢 Эълонлар: {announcements_count}"
     )
@@ -2150,6 +2799,8 @@ async def admin_orders(
                     problem,
                     status,
                     accepted_worker_name,
+                    country_name,
+                    city,
                     created_at
                 FROM orders
                 ORDER BY id DESC
@@ -2160,11 +2811,9 @@ async def admin_orders(
             rows = cur.fetchall()
 
     if not rows:
-
         await update.message.reply_text(
             "Буюртмалар йўқ."
         )
-
         return
 
     lines = [
@@ -2182,11 +2831,14 @@ async def admin_orders(
             problem,
             status,
             accepted,
+            country,
+            city,
             created,
         ) = row
 
         lines.append(
             f"#{oid} | {status}\n"
+            f"🌍 {country or '-'} | 🏙 {city or '-'}\n"
             f"{service} | {name}\n"
             f"📞 {phone}\n"
             f"📍 {address}\n"
@@ -2208,7 +2860,7 @@ async def error_handler(
     context: ContextTypes.DEFAULT_TYPE,
 ):
     logger.error(
-        "Unhandled exception while processing update:",
+        "Unhandled exception:",
         exc_info=context.error,
     )
 
@@ -2226,12 +2878,46 @@ def build_application():
         .build()
     )
 
-    # ========================================================
+    # --------------------------------------------------------
+    # LOCATION CONVERSATION
+    # --------------------------------------------------------
+
+    location_conv = ConversationHandler(
+        entry_points=[
+            MessageHandler(
+                filters.Regex(
+                    r"^🌍 Давлат/шаҳар$"
+                ),
+                location_start,
+            )
+        ],
+        states={
+            LOCATION_COUNTRY: [
+                MessageHandler(
+                    filters.TEXT & ~filters.COMMAND,
+                    location_country,
+                )
+            ],
+            LOCATION_CITY: [
+                MessageHandler(
+                    filters.TEXT & ~filters.COMMAND,
+                    location_city,
+                )
+            ],
+        },
+        fallbacks=[
+            CommandHandler(
+                "start",
+                start,
+            )
+        ],
+    )
+
+    # --------------------------------------------------------
     # WORKER REGISTRATION
-    # ========================================================
+    # --------------------------------------------------------
 
     worker_conv = ConversationHandler(
-
         entry_points=[
             MessageHandler(
                 filters.Regex(
@@ -2240,37 +2926,43 @@ def build_application():
                 worker_register_start,
             )
         ],
-
         states={
-
+            WORKER_COUNTRY: [
+                MessageHandler(
+                    filters.TEXT & ~filters.COMMAND,
+                    worker_country,
+                )
+            ],
+            WORKER_CITY: [
+                MessageHandler(
+                    filters.TEXT & ~filters.COMMAND,
+                    worker_city,
+                )
+            ],
             WORKER_NAME: [
                 MessageHandler(
                     filters.TEXT & ~filters.COMMAND,
                     worker_name,
                 )
             ],
-
             WORKER_PHONE: [
                 MessageHandler(
                     filters.TEXT & ~filters.COMMAND,
                     worker_phone,
                 )
             ],
-
             WORKER_SERVICE: [
                 MessageHandler(
                     filters.TEXT & ~filters.COMMAND,
                     worker_service,
                 )
             ],
-
             WORKER_AREA: [
                 MessageHandler(
                     filters.TEXT & ~filters.COMMAND,
                     worker_area,
                 )
             ],
-
             WORKER_PRICE: [
                 MessageHandler(
                     filters.TEXT & ~filters.COMMAND,
@@ -2278,7 +2970,6 @@ def build_application():
                 )
             ],
         },
-
         fallbacks=[
             CommandHandler(
                 "start",
@@ -2287,44 +2978,38 @@ def build_application():
         ],
     )
 
-    # ========================================================
+    # --------------------------------------------------------
     # CUSTOMER ORDER
-    # ========================================================
+    # --------------------------------------------------------
 
     order_conv = ConversationHandler(
-
         entry_points=[
             MessageHandler(
                 filters.Regex(
-                    r"^(🔧|⚡|📱|💻|🧹|🪑)"
+                    SERVICE_PATTERN
                 ),
                 order_from_service,
             )
         ],
-
         states={
-
             ORDER_NAME: [
                 MessageHandler(
                     filters.TEXT & ~filters.COMMAND,
                     customer_name,
                 )
             ],
-
             ORDER_PHONE: [
                 MessageHandler(
                     filters.TEXT & ~filters.COMMAND,
                     customer_phone,
                 )
             ],
-
             ORDER_ADDRESS: [
                 MessageHandler(
                     filters.TEXT & ~filters.COMMAND,
                     customer_address,
                 )
             ],
-
             ORDER_PROBLEM: [
                 MessageHandler(
                     filters.TEXT & ~filters.COMMAND,
@@ -2332,7 +3017,6 @@ def build_application():
                 )
             ],
         },
-
         fallbacks=[
             CommandHandler(
                 "start",
@@ -2341,12 +3025,11 @@ def build_application():
         ],
     )
 
-    # ========================================================
+    # --------------------------------------------------------
     # ANNOUNCEMENT
-    # ========================================================
+    # --------------------------------------------------------
 
     announcement_conv = ConversationHandler(
-
         entry_points=[
             MessageHandler(
                 filters.Regex(
@@ -2355,44 +3038,49 @@ def build_application():
                 announcement_start,
             )
         ],
-
         states={
-
+            ANN_COUNTRY: [
+                MessageHandler(
+                    filters.TEXT & ~filters.COMMAND,
+                    ann_country,
+                )
+            ],
+            ANN_CITY: [
+                MessageHandler(
+                    filters.TEXT & ~filters.COMMAND,
+                    ann_city,
+                )
+            ],
             ANN_NAME: [
                 MessageHandler(
                     filters.TEXT & ~filters.COMMAND,
                     ann_name,
                 )
             ],
-
             ANN_PHONE: [
                 MessageHandler(
                     filters.TEXT & ~filters.COMMAND,
                     ann_phone,
                 )
             ],
-
             ANN_SERVICE: [
                 MessageHandler(
                     filters.TEXT & ~filters.COMMAND,
                     ann_service,
                 )
             ],
-
             ANN_ADDRESS: [
                 MessageHandler(
                     filters.TEXT & ~filters.COMMAND,
                     ann_address,
                 )
             ],
-
             ANN_BUDGET: [
                 MessageHandler(
                     filters.TEXT & ~filters.COMMAND,
                     ann_budget,
                 )
             ],
-
             ANN_DETAILS: [
                 MessageHandler(
                     filters.TEXT & ~filters.COMMAND,
@@ -2400,7 +3088,6 @@ def build_application():
                 )
             ],
         },
-
         fallbacks=[
             CommandHandler(
                 "start",
@@ -2409,49 +3096,54 @@ def build_application():
         ],
     )
 
-    # ========================================================
+    # --------------------------------------------------------
     # EDIT PROFILE
-    # ========================================================
+    # --------------------------------------------------------
 
     edit_conv = ConversationHandler(
-
         entry_points=[
             CallbackQueryHandler(
                 start_edit_profile,
                 pattern=r"^edit_profile$",
             )
         ],
-
         states={
-
+            EDIT_WORKER_COUNTRY: [
+                MessageHandler(
+                    filters.TEXT & ~filters.COMMAND,
+                    edit_worker_country,
+                )
+            ],
+            EDIT_WORKER_CITY: [
+                MessageHandler(
+                    filters.TEXT & ~filters.COMMAND,
+                    edit_worker_city,
+                )
+            ],
             EDIT_WORKER_NAME: [
                 MessageHandler(
                     filters.TEXT & ~filters.COMMAND,
                     edit_worker_name,
                 )
             ],
-
             EDIT_WORKER_PHONE: [
                 MessageHandler(
                     filters.TEXT & ~filters.COMMAND,
                     edit_worker_phone,
                 )
             ],
-
             EDIT_WORKER_SERVICE: [
                 MessageHandler(
                     filters.TEXT & ~filters.COMMAND,
                     edit_worker_service,
                 )
             ],
-
             EDIT_WORKER_AREA: [
                 MessageHandler(
                     filters.TEXT & ~filters.COMMAND,
                     edit_worker_area,
                 )
             ],
-
             EDIT_WORKER_PRICE: [
                 MessageHandler(
                     filters.TEXT & ~filters.COMMAND,
@@ -2459,7 +3151,6 @@ def build_application():
                 )
             ],
         },
-
         fallbacks=[
             CommandHandler(
                 "start",
@@ -2471,6 +3162,10 @@ def build_application():
     # ========================================================
     # ADD CONVERSATIONS
     # ========================================================
+
+    application.add_handler(
+        location_conv
+    )
 
     application.add_handler(
         worker_conv
@@ -2618,21 +3313,9 @@ def build_application():
 
 def main():
 
-    # --------------------------------------------------------
-    # DATABASE
-    # --------------------------------------------------------
-
     init_database()
 
-    # --------------------------------------------------------
-    # APPLICATION
-    # --------------------------------------------------------
-
     application = build_application()
-
-    # --------------------------------------------------------
-    # RENDER WEBHOOK
-    # --------------------------------------------------------
 
     if RENDER_EXTERNAL_URL:
 
@@ -2652,10 +3335,6 @@ def main():
             url_path="telegram-webhook",
             webhook_url=webhook_url,
         )
-
-    # --------------------------------------------------------
-    # LOCAL / POLLING
-    # --------------------------------------------------------
 
     else:
 

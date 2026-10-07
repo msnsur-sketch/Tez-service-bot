@@ -87,7 +87,6 @@ COUNTRIES = {
 # STATES
 # ============================================================
 
-# Worker
 WORKER_COUNTRY = 0
 WORKER_CITY = 1
 WORKER_NAME = 2
@@ -96,13 +95,11 @@ WORKER_SERVICE = 4
 WORKER_AREA = 5
 WORKER_PRICE = 6
 
-# Order
 ORDER_NAME = 10
 ORDER_PHONE = 11
 ORDER_ADDRESS = 12
 ORDER_PROBLEM = 13
 
-# Announcement
 ANN_COUNTRY = 20
 ANN_CITY = 21
 ANN_NAME = 22
@@ -112,7 +109,6 @@ ANN_ADDRESS = 25
 ANN_BUDGET = 26
 ANN_DETAILS = 27
 
-# Edit
 EDIT_WORKER_COUNTRY = 30
 EDIT_WORKER_CITY = 31
 EDIT_WORKER_NAME = 32
@@ -121,7 +117,6 @@ EDIT_WORKER_SERVICE = 34
 EDIT_WORKER_AREA = 35
 EDIT_WORKER_PRICE = 36
 
-# Location
 LOCATION_COUNTRY = 40
 LOCATION_CITY = 41
 
@@ -159,7 +154,6 @@ def init_database():
     with get_connection() as conn:
         with conn.cursor() as cur:
 
-            # USERS
             cur.execute(
                 """
                 CREATE TABLE IF NOT EXISTS user_profiles (
@@ -174,7 +168,6 @@ def init_database():
                 """
             )
 
-            # WORKERS
             cur.execute(
                 """
                 CREATE TABLE IF NOT EXISTS workers (
@@ -209,7 +202,6 @@ def init_database():
                 """
             )
 
-            # ORDERS
             cur.execute(
                 """
                 CREATE TABLE IF NOT EXISTS orders (
@@ -247,7 +239,6 @@ def init_database():
                 """
             )
 
-            # ANNOUNCEMENTS
             cur.execute(
                 """
                 CREATE TABLE IF NOT EXISTS announcements (
@@ -274,7 +265,6 @@ def init_database():
                     f"ALTER TABLE announcements ADD COLUMN IF NOT EXISTS {column}"
                 )
 
-            # INDEXES
             cur.execute(
                 """
                 CREATE INDEX IF NOT EXISTS idx_workers_telegram_id
@@ -361,72 +351,245 @@ def get_user_location(telegram_id):
 
 
 # ============================================================
-# NORMALIZATION
+# TEXT NORMALIZATION
 # ============================================================
 
-def normalize_service_name(text):
+def normalize_text(text):
     if not text:
         return ""
 
     text = str(text).casefold()
 
+    # Emoji
     text = re.sub(
-        r"[🔧⚡📱💻🧹🪑👨‍🔧]",
-        "",
+        r"[🔧⚡📱💻🧹🪑👨‍🔧📢🌍🏙]",
+        " ",
         text,
     )
 
+    # Apostrophelarni bir xil qilish
+    text = text.replace("’", "'")
+    text = text.replace("‘", "'")
+    text = text.replace("`", "'")
+    text = text.replace("ʻ", "'")
+    text = text.replace("ʼ", "'")
+
+    # Kyrgyz / Uzbek / Russian Cyrillic -> Latin
     replacements = {
-        "а": "a", "б": "b", "в": "v", "г": "g",
-        "д": "d", "е": "e", "ё": "yo", "ж": "j",
-        "з": "z", "и": "i", "й": "y", "к": "k",
-        "л": "l", "м": "m", "н": "n", "о": "o",
-        "п": "p", "р": "r", "с": "s", "т": "t",
-        "у": "u", "ф": "f", "х": "x", "ц": "ts",
-        "ч": "ch", "ш": "sh", "щ": "sh", "ъ": "",
-        "ы": "y", "ь": "", "э": "e", "ю": "yu",
-        "я": "ya", "қ": "q", "ғ": "g", "ҳ": "h",
+        "а": "a",
+        "ә": "a",
+        "б": "b",
+        "в": "v",
+        "г": "g",
+        "ғ": "g",
+        "д": "d",
+        "е": "e",
+        "ё": "yo",
+        "ж": "j",
+        "з": "z",
+        "и": "i",
+        "й": "y",
+        "к": "k",
+        "қ": "q",
+        "л": "l",
+        "м": "m",
+        "н": "n",
+        "ң": "ng",
+        "о": "o",
+        "ө": "o",
+        "п": "p",
+        "р": "r",
+        "с": "s",
+        "т": "t",
+        "у": "u",
+        "ү": "u",
+        "ф": "f",
+        "х": "x",
+        "ҳ": "h",
+        "ц": "ts",
+        "ч": "ch",
+        "ш": "sh",
+        "щ": "sh",
+        "ъ": "",
+        "ы": "y",
+        "ь": "",
+        "э": "e",
+        "ю": "yu",
+        "я": "ya",
         "ў": "o",
+        "җ": "j",
     }
 
     for old, new in replacements.items():
         text = text.replace(old, new)
 
+    # Uzbek apostrophe forms:
+    # g' -> g, o' -> o
+    text = text.replace("g'", "g")
+    text = text.replace("o'", "o")
+
+    # Faqat harf/raqam
     text = re.sub(r"[^a-z0-9\s]", " ", text)
+
     text = re.sub(r"\s+", " ", text)
 
     return text.strip()
 
 
+# ============================================================
+# SERVICE NORMALIZATION
+# ============================================================
+
+SERVICE_ALIASES = {
+    "elektrik": [
+        "elektrik",
+        "elektr",
+        "elektrchi",
+        "elektrchi",
+        "electric",
+        "electrician",
+        "svet",
+        "sveta",
+        "svetchi",
+        "svetchik",
+        "light",
+        "osvetlenie",
+        "yoritish",
+        "yoruglik",
+        "yorug",
+        "tok",
+        "tokchi",
+        "sim",
+        "simchi",
+        "provod",
+        "provodka",
+        "elektrmontaj",
+        "elektromontaj",
+    ],
+
+    "santexnik": [
+        "santexnik",
+        "santehnik",
+        "santexnikchi",
+        "santehnikchi",
+        "santex",
+        "vodoprovod",
+        "vodoprovodchi",
+        "kran",
+        "kranchi",
+        "suv",
+        "suvchi",
+        "kanalizatsiya",
+        "truba",
+        "trubachi",
+        "ariston",
+        "unitaz",
+        "rakovina",
+        "dush",
+    ],
+
+    "telefon": [
+        "telefon",
+        "telefonchi",
+        "telefonremont",
+        "telefon ta'miri",
+        "iphone",
+        "aifon",
+        "samsung",
+        "xiaomi",
+        "redmi",
+        "oppo",
+        "vivo",
+        "honor",
+        "smartfon",
+        "smartphone",
+    ],
+
+    "kompyuter": [
+        "kompyuter",
+        "komputer",
+        "komyuter",
+        "kompyuterchi",
+        "komputerchi",
+        "noutbuk",
+        "notebook",
+        "laptop",
+        "printer",
+        "windows",
+        "sistemnik",
+    ],
+
+    "tozalash": [
+        "tozalash",
+        "uytozalash",
+        "tozalovchi",
+        "uborka",
+        "uborshik",
+        "uborshitsa",
+        "cleaning",
+        "cleaner",
+    ],
+
+    "mebel": [
+        "mebel",
+        "mebelchi",
+        "mebelremont",
+        "divan",
+        "shkaf",
+        "stol",
+        "stul",
+        "krovat",
+        "oshxona",
+    ],
+}
+
+
 def canonical_service(text):
-    normalized = normalize_service_name(text)
+    normalized = normalize_text(text)
 
     if not normalized:
         return ""
 
-    if any(x in normalized for x in [
-        "kompyuter",
-        "komyuter",
-        "komputer",
-    ]):
-        return "kompyuter"
+    compact = normalized.replace(" ", "")
 
-    if "santexnik" in normalized or "santehnik" in normalized:
-        return "santexnik"
+    for canonical, aliases in SERVICE_ALIASES.items():
 
-    if "elektrik" in normalized:
+        for alias in aliases:
+            alias_normalized = normalize_text(alias)
+            alias_compact = alias_normalized.replace(" ", "")
+
+            if (
+                normalized == alias_normalized
+                or compact == alias_compact
+                or alias_compact in compact
+                or compact in alias_compact
+            ):
+                return canonical
+
+    # Button xizmatlari
+    if "elektr" in compact or "svet" in compact:
         return "elektrik"
 
-    if "telefon" in normalized:
+    if (
+        "santex" in compact
+        or "santeh" in compact
+        or "vodoprovod" in compact
+    ):
+        return "santexnik"
+
+    if "telefon" in compact:
         return "telefon"
 
-    if "tozalash" in normalized:
+    if "kompyuter" in compact or "komputer" in compact:
+        return "kompyuter"
+
+    if "tozal" in compact or "uborka" in compact:
         return "tozalash"
 
-    if "mebel" in normalized:
+    if "mebel" in compact:
         return "mebel"
 
-    return normalized
+    return compact
 
 
 def service_matches(selected_service, worker_services):
@@ -436,14 +599,89 @@ def service_matches(selected_service, worker_services):
         return False
 
     parts = re.split(
-        r"[,;/\n]+",
+        r"[,;/\n|]+",
         str(worker_services),
     )
 
-    return any(
-        canonical_service(part) == selected
-        for part in parts
-    )
+    for part in parts:
+        if canonical_service(part) == selected:
+            return True
+
+    return False
+
+
+# ============================================================
+# CITY NORMALIZATION
+# ============================================================
+
+def canonical_city(text):
+    if not text:
+        return ""
+
+    s = normalize_text(text)
+
+    # Bo'sh joylarni olib tashlash uchun
+    compact = s.replace(" ", "")
+
+    # Shahar qo'shimchalari
+    suffixes = [
+        "shahri",
+        "shahar",
+        "city",
+        "gorod",
+        "shaary",
+        "shaar",
+    ]
+
+    for suffix in suffixes:
+        compact = compact.replace(suffix, "")
+
+    aliases = {
+        # Kyrgyzstan
+        "osh": "osh",
+        "oshshaary": "osh",
+        "oshshaar": "osh",
+
+        "bishkek": "bishkek",
+
+        "jalalabad": "jalalabad",
+        "jallalabad": "jalalabad",
+        "jalalabat": "jalalabad",
+        "jalalabat": "jalalabad",
+
+        "karakol": "karakol",
+
+        "tokmok": "tokmok",
+
+        # Uzbekistan
+        "toshkent": "toshkent",
+        "tashkent": "toshkent",
+
+        "samarqand": "samarqand",
+        "samarkand": "samarqand",
+
+        "andijon": "andijon",
+        "andijan": "andijon",
+
+        "namangan": "namangan",
+
+        "fargona": "fargona",
+        "fergana": "fargona",
+
+        "buxoro": "buxoro",
+        "bukhara": "buxoro",
+
+        "qarshi": "qarshi",
+        "karshi": "qarshi",
+
+        "nukus": "nukus",
+    }
+
+    return aliases.get(compact, compact)
+
+
+def city_matches(city1, city2):
+    return canonical_city(city1) == canonical_city(city2)
 
 
 # ============================================================
@@ -550,8 +788,6 @@ async def start(update, context):
         reply_markup=country_keyboard(),
     )
 
-    # MUHIM:
-    # /start endi location conversation ichiga kiradi
     return LOCATION_COUNTRY
 
 
@@ -609,12 +845,9 @@ async def location_city(update, context):
     country = data["country"]
 
     if city == "✍️ Бошқа шаҳар":
-        context.user_data["waiting_custom_city"] = True
-
         await update.message.reply_text(
             "🏙 Шаҳар номини ёзинг:"
         )
-
         return LOCATION_CITY
 
     if not city:
@@ -745,10 +978,6 @@ async def worker_city(update, context):
     data = context.user_data.get("worker_data")
 
     if not data:
-        await update.message.reply_text(
-            "⚠️ Жараён бузилди. Қайта бошланг.",
-            reply_markup=main_keyboard(),
-        )
         return ConversationHandler.END
 
     if city == "✍️ Бошқа шаҳар":
@@ -1007,18 +1236,11 @@ async def customer_name(update, context):
     name = update.message.text.strip()
 
     if not name:
-        await update.message.reply_text(
-            "❗ Исмни бўш қолдирманг."
-        )
         return ORDER_NAME
 
     data = context.user_data.get("order_data")
 
     if not data:
-        await update.message.reply_text(
-            "⚠️ Буюртма жараёни бузилди.",
-            reply_markup=main_keyboard(),
-        )
         return ConversationHandler.END
 
     data["name"] = name
@@ -1057,9 +1279,6 @@ async def customer_address(update, context):
     address = update.message.text.strip()
 
     if not address:
-        await update.message.reply_text(
-            "❗ Манзилни бўш қолдирманг."
-        )
         return ORDER_ADDRESS
 
     data = context.user_data.get("order_data")
@@ -1080,18 +1299,11 @@ async def customer_problem(update, context):
     problem = update.message.text.strip()
 
     if not problem:
-        await update.message.reply_text(
-            "❗ Муаммони ёзинг."
-        )
         return ORDER_PROBLEM
 
     data = context.user_data.get("order_data")
 
     if not data:
-        await update.message.reply_text(
-            "⚠️ Буюртма маълумотлари топилмади.",
-            reply_markup=main_keyboard(),
-        )
         return ConversationHandler.END
 
     required = [
@@ -1157,6 +1369,8 @@ async def customer_problem(update, context):
 
             order_id = cur.fetchone()[0]
 
+            # Фақат мамлакат бўйича оламиз.
+            # Шаҳарни Python canonical_city орқали текширамиз.
             cur.execute(
                 """
                 SELECT
@@ -1165,18 +1379,15 @@ async def customer_problem(update, context):
                     service,
                     area,
                     price,
-                    currency
+                    currency,
+                    city
                 FROM workers
                 WHERE COALESCE(is_active,TRUE)=TRUE
                   AND telegram_id IS NOT NULL
                   AND country_code=%s
-                  AND city=%s
                 ORDER BY id DESC
                 """,
-                (
-                    data["country_code"],
-                    data["city"],
-                ),
+                (data["country_code"],),
             )
 
             workers = cur.fetchall()
@@ -1205,6 +1416,7 @@ async def customer_problem(update, context):
         worker_area,
         worker_price,
         worker_currency,
+        worker_city,
     ) in workers:
 
         if not worker_telegram_id:
@@ -1213,10 +1425,28 @@ async def customer_problem(update, context):
         if worker_telegram_id in sent_ids:
             continue
 
+        # ШАҲАР ТЕКШИРУВИ
+        if not city_matches(
+            data["city"],
+            worker_city,
+        ):
+            logger.info(
+                "City mismatch: customer=%s worker=%s",
+                data["city"],
+                worker_city,
+            )
+            continue
+
+        # ХИЗМАТ ТЕКШИРУВИ
         if not service_matches(
             data["service"],
             worker_service,
         ):
+            logger.info(
+                "Service mismatch: selected=%s worker=%s",
+                data["service"],
+                worker_service,
+            )
             continue
 
         sent_ids.add(worker_telegram_id)
@@ -1336,6 +1566,51 @@ async def accept_order_callback(update, context):
             worker_country = worker[4]
             worker_city = worker[5]
 
+            # ЭНДИ SQL ДА ШАҲАРНИ ТЎҒРИЛАШ УЧУН
+            # аввал буюртмани оламиз
+            cur.execute(
+                """
+                SELECT
+                    id,
+                    telegram_id,
+                    name,
+                    phone,
+                    service,
+                    address,
+                    problem,
+                    country_code,
+                    country_name,
+                    city
+                FROM orders
+                WHERE id=%s
+                  AND status='new'
+                """,
+                (order_id,),
+            )
+
+            order_data = cur.fetchone()
+
+            if not order_data:
+                await query.message.reply_text(
+                    "⚠️ Бу буюртма аллақачон қабул қилинган."
+                )
+                return
+
+            order_country_code = order_data[7]
+            order_city = order_data[9]
+
+            if worker_country != order_country_code:
+                await query.message.reply_text(
+                    "⚠️ Бу буюртма сиз турган мамлакатга мос эмас."
+                )
+                return
+
+            if not city_matches(worker_city, order_city):
+                await query.message.reply_text(
+                    "⚠️ Бу буюртма сиз турган шаҳарга мос эмас."
+                )
+                return
+
             cur.execute(
                 """
                 UPDATE orders
@@ -1346,8 +1621,6 @@ async def accept_order_callback(update, context):
                     accepted_at=NOW()
                 WHERE id=%s
                   AND status='new'
-                  AND country_code=%s
-                  AND city=%s
                 RETURNING
                     telegram_id,
                     name,
@@ -1362,8 +1635,6 @@ async def accept_order_callback(update, context):
                     worker_id,
                     worker_name,
                     order_id,
-                    worker_country,
-                    worker_city,
                 ),
             )
 
@@ -1373,8 +1644,7 @@ async def accept_order_callback(update, context):
 
     if not order:
         await query.message.reply_text(
-            "⚠️ Бу буюртма аллақачон қабул қилинган "
-            "ёки сиз бу буюртма шаҳрига мос эмассиз."
+            "⚠️ Бу буюртма аллақачон қабул қилинган."
         )
 
         try:
@@ -1520,7 +1790,7 @@ async def my_profile(update, context):
         ]
     )
 
-    text = (
+    await update.message.reply_text(
         "👤 МЕНИНГ ПРОФИЛИМ\n\n"
         f"🌍 Давлат: {country or '-'}\n"
         f"🏙 Шаҳар: {city or '-'}\n"
@@ -1530,11 +1800,7 @@ async def my_profile(update, context):
         f"📍 Ҳудуд: {area}\n"
         f"💰 Нархи: {price} {currency or ''}\n"
         f"📌 Ҳолат: {status}\n"
-        f"🕐 Рўйхатдан ўтган: {created_at}"
-    )
-
-    await update.message.reply_text(
-        text,
+        f"🕐 Рўйхатдан ўтган: {created_at}",
         reply_markup=keyboard,
     )
 
@@ -1812,11 +2078,6 @@ async def toggle_worker_callback(update, context):
         )
         return
 
-    await query.message.reply_text(
-        "🔄 Профил ҳолати ўзгартирилди."
-    )
-
-    # Profilni qayta ko'rsatish
     with get_connection() as conn:
         with conn.cursor() as cur:
             cur.execute(
@@ -2396,23 +2657,12 @@ def build_application():
         .build()
     )
 
-    # --------------------------------------------------------
     # LOCATION
-    # --------------------------------------------------------
-
     location_conv = ConversationHandler(
         entry_points=[
-            # MUHIM:
-            # /start endi location conversationni boshlaydi
-            CommandHandler(
-                "start",
-                start,
-            ),
-
+            CommandHandler("start", start),
             MessageHandler(
-                filters.Regex(
-                    r"^🌍 Давлат/шаҳар$"
-                ),
+                filters.Regex(r"^🌍 Давлат/шаҳар$"),
                 location_start,
             ),
         ],
@@ -2431,17 +2681,11 @@ def build_application():
             ],
         },
         fallbacks=[
-            CommandHandler(
-                "start",
-                start,
-            )
+            CommandHandler("start", start)
         ],
     )
 
-    # --------------------------------------------------------
-    # WORKER REGISTRATION
-    # --------------------------------------------------------
-
+    # WORKER
     worker_conv = ConversationHandler(
         entry_points=[
             MessageHandler(
@@ -2500,10 +2744,7 @@ def build_application():
         ],
     )
 
-    # --------------------------------------------------------
     # ORDER
-    # --------------------------------------------------------
-
     order_conv = ConversationHandler(
         entry_points=[
             MessageHandler(
@@ -2542,10 +2783,7 @@ def build_application():
         ],
     )
 
-    # --------------------------------------------------------
     # ANNOUNCEMENT
-    # --------------------------------------------------------
-
     announcement_conv = ConversationHandler(
         entry_points=[
             MessageHandler(
@@ -2610,10 +2848,7 @@ def build_application():
         ],
     )
 
-    # --------------------------------------------------------
     # EDIT PROFILE
-    # --------------------------------------------------------
-
     edit_conv = ConversationHandler(
         entry_points=[
             CallbackQueryHandler(
@@ -2670,20 +2905,13 @@ def build_application():
         ],
     )
 
-    # --------------------------------------------------------
-    # CONVERSATIONS
-    # --------------------------------------------------------
-
     application.add_handler(location_conv)
     application.add_handler(worker_conv)
     application.add_handler(order_conv)
     application.add_handler(announcement_conv)
     application.add_handler(edit_conv)
 
-    # --------------------------------------------------------
     # CALLBACKS
-    # --------------------------------------------------------
-
     application.add_handler(
         CallbackQueryHandler(
             accept_order_callback,
@@ -2705,13 +2933,7 @@ def build_application():
         )
     )
 
-    # --------------------------------------------------------
     # COMMANDS
-    # --------------------------------------------------------
-
-    # /start location_conv ichida ishlaydi.
-    # Bu yerda boshqa commandlar qoladi.
-
     application.add_handler(
         CommandHandler("help", help_command)
     )
@@ -2728,10 +2950,7 @@ def build_application():
         CommandHandler("orders", admin_orders)
     )
 
-    # --------------------------------------------------------
     # MAIN MENU
-    # --------------------------------------------------------
-
     application.add_handler(
         MessageHandler(
             filters.Regex(r"^🔧 Хизматлар$"),
@@ -2766,10 +2985,6 @@ def build_application():
             start,
         )
     )
-
-    # --------------------------------------------------------
-    # ERROR
-    # --------------------------------------------------------
 
     application.add_error_handler(error_handler)
 
@@ -2812,10 +3027,6 @@ def main():
             drop_pending_updates=True
         )
 
-
-# ============================================================
-# RUN
-# ============================================================
 
 if __name__ == "__main__":
     main()

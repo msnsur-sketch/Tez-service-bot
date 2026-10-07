@@ -1,72 +1,133 @@
-import logging
 import os
 import re
+import logging
+from datetime import datetime
 
-import psycopg
-
-from telegram import (
-    InlineKeyboardButton,
-    InlineKeyboardMarkup,
-    ReplyKeyboardMarkup,
-    Update,
-)
+import psycopg2
+from psycopg2.extras import RealDictCursor
+from telegram import Update, ReplyKeyboardMarkup, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     Application,
-    CallbackQueryHandler,
     CommandHandler,
-    ContextTypes,
-    ConversationHandler,
     MessageHandler,
+    CallbackQueryHandler,
+    ConversationHandler,
+    ContextTypes,
     filters,
 )
-
-
-# =========================================================
-# SETTINGS
-# =========================================================
-
-TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
-DATABASE_URL = os.getenv("DATABASE_URL")
-ADMIN_ID = int(os.getenv("ADMIN_ID", "0"))
-
-PORT = int(os.getenv("PORT", "10000"))
-RENDER_EXTERNAL_URL = os.getenv("RENDER_EXTERNAL_URL", "").rstrip("/")
-
-
-# =========================================================
-# LOGGING
-# =========================================================
 
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
     level=logging.INFO,
 )
-
 logger = logging.getLogger(__name__)
 
+TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
+DATABASE_URL = os.getenv("DATABASE_URL")
+ADMIN_ID = int(os.getenv("ADMIN_ID", "0")) if os.getenv("ADMIN_ID") else 0
+PORT = int(os.getenv("PORT", "10000"))
+RENDER_EXTERNAL_URL = os.getenv("RENDER_EXTERNAL_URL", "").rstrip("/")
 
-# =========================================================
-# DATABASE
-# =========================================================
+if not TOKEN:
+    raise RuntimeError("TELEGRAM_BOT_TOKEN topilmadi")
+if not DATABASE_URL:
+    raise RuntimeError("DATABASE_URL topilmadi")
+
+# Conversation states
+WORKER_NAME, WORKER_PHONE, WORKER_SERVICE, WORKER_AREA, WORKER_PRICE = range(5)
+ORDER_NAME, ORDER_PHONE, ORDER_ADDRESS, ORDER_PROBLEM = range(5, 9)
+ANN_NAME, ANN_PHONE, ANN_SERVICE, ANN_ADDRESS, ANN_BUDGET, ANN_DETAILS = range(9, 15)
+EDIT_WORKER_NAME, EDIT_WORKER_PHONE, EDIT_WORKER_SERVICE, EDIT_WORKER_AREA, EDIT_WORKER_PRICE = range(20, 25)
+
+SERVICES = [
+    "🔧 Сантехник",
+    "⚡ Электрик",
+    "📱 Телефон таъмири",
+    "💻 Компьютер таъмири",
+    "🧹 Уй тозалаш",
+    "🪑 Мебель таъмири",
+]
+
 
 def get_connection():
+    return psycopg2.connect(DATABASE_URL, connect_timeout=10)
 
-    if not DATABASE_URL:
-        raise RuntimeError("DATABASE_URL topilmadi")
 
-    return psycopg.connect(DATABASE_URL)
+def normalize_service_name(text):
+    if not text:
+        return ""
+    text = str(text).casefold()
+    text = re.sub(r"[🔧⚡📱💻🧹🪑👨‍🔧]", "", text)
+    replacements = {
+        "а": "a", "б": "b", "в": "v", "г": "g", "д": "d", "е": "e",
+        "ё": "yo", "ж": "j", "з": "z", "и": "i", "й": "y", "к": "k",
+        "л": "l", "м": "m", "н": "n", "о": "o", "п": "p", "р": "r",
+        "с": "s", "т": "t", "у": "u", "ф": "f", "х": "x", "ц": "ts",
+        "ч": "ch", "ш": "sh", "щ": "sh", "ъ": "", "ы": "y", "ь": "",
+        "э": "e", "ю": "yu", "я": "ya", "қ": "q", "ғ": "g", "ҳ": "h", "ў": "o",
+    }
+    for old, new in replacements.items():
+        text = text.replace(old, new)
+    text = re.sub(r"[^a-z0-9\s]", " ", text)
+    text = re.sub(r"\s+", " ", text)
+    return text.strip()
+
+
+def canonical_service(text):
+    normalized = normalize_service_name(text)
+    if not normalized:
+        return ""
+    if "kompyuter" in normalized or "komyuter" in normalized or "komputer" in normalized:
+        return "kompyuter"
+    if "santexnik" in normalized or "santehnik" in normalized:
+        return "santexnik"
+    if "elektrik" in normalized:
+        return "elektrik"
+    if "telefon" in normalized:
+        return "telefon"
+    if "uy tozalash" in normalized or "tozalash" in normalized:
+        return "tozalash"
+    if "mebel" in normalized:
+        return "mebel"
+    return normalized
+
+
+def service_matches(selected_service, worker_services):
+    selected = canonical_service(selected_service)
+    if not selected or not worker_services:
+        return False
+    parts = re.split(r"[,;/\n]+", str(worker_services))
+    return any(canonical_service(part) == selected for part in parts)
+
+
+def main_keyboard():
+    return ReplyKeyboardMarkup(
+        [
+            ["🔧 Хизматлар", "👨‍🔧 Уста чақириш"],
+            ["📢 Эълон бериш", "Алоқа"],
+            ["👤 Менинг профилим"],
+        ],
+        resize_keyboard=True,
+    )
+
+
+def services_keyboard():
+    return ReplyKeyboardMarkup(
+        [[SERVICES[0], SERVICES[1]], [SERVICES[2], SERVICES[3]], [SERVICES[4], SERVICES[5]], ["⬅️ Бош меню"]],
+        resize_keyboard=True,
+    )
+
+
+def worker_services_keyboard():
+    return ReplyKeyboardMarkup(
+        [[SERVICES[0], SERVICES[1]], [SERVICES[2], SERVICES[3]], [SERVICES[4], SERVICES[5]]],
+        resize_keyboard=True,
+    )
 
 
 def init_database():
-
     with get_connection() as conn:
-
         with conn.cursor() as cur:
-
-            # =================================================
-            # WORKERS
-            # =================================================
-
             cur.execute(
                 """
                 CREATE TABLE IF NOT EXISTS workers (
@@ -81,11 +142,6 @@ def init_database():
                 )
                 """
             )
-
-            # =================================================
-            # ORDERS
-            # =================================================
-
             cur.execute(
                 """
                 CREATE TABLE IF NOT EXISTS orders (
@@ -100,11 +156,6 @@ def init_database():
                 )
                 """
             )
-
-            # =================================================
-            # ANNOUNCEMENTS
-            # =================================================
-
             cur.execute(
                 """
                 CREATE TABLE IF NOT EXISTS announcements (
@@ -120,2618 +171,742 @@ def init_database():
                 )
                 """
             )
-
-            # =================================================
-            # OLD DATABASE COMPATIBILITY
-            # =================================================
-
-            cur.execute(
-                """
-                ALTER TABLE workers
-                ADD COLUMN IF NOT EXISTS telegram_id BIGINT
-                """
-            )
-
-            cur.execute(
-                """
-                ALTER TABLE workers
-                ADD COLUMN IF NOT EXISTS is_active BOOLEAN DEFAULT TRUE
-                """
-            )
-
-            cur.execute(
-                """
-                UPDATE workers
-                SET is_active = TRUE
-                WHERE is_active IS NULL
-                """
-            )
-
-            cur.execute(
-                """
-                ALTER TABLE orders
-                ADD COLUMN IF NOT EXISTS telegram_id BIGINT
-                """
-            )
-
-            cur.execute(
-                """
-                ALTER TABLE announcements
-                ADD COLUMN IF NOT EXISTS telegram_id BIGINT
-                """
-            )
-
-            # =================================================
-            # NEW ORDER STATUS FIELDS
-            # =================================================
-
-            cur.execute(
-                """
-                ALTER TABLE orders
-                ADD COLUMN IF NOT EXISTS status TEXT DEFAULT 'new'
-                """
-            )
-
-            cur.execute(
-                """
-                ALTER TABLE orders
-                ADD COLUMN IF NOT EXISTS accepted_worker_id BIGINT
-                """
-            )
-
-            cur.execute(
-                """
-                ALTER TABLE orders
-                ADD COLUMN IF NOT EXISTS accepted_worker_name TEXT
-                """
-            )
-
-            cur.execute(
-                """
-                ALTER TABLE orders
-                ADD COLUMN IF NOT EXISTS accepted_at TIMESTAMPTZ
-                """
-            )
-
-            cur.execute(
-                """
-                UPDATE orders
-                SET status = 'new'
-                WHERE status IS NULL
-                """
-            )
-
+            cur.execute("ALTER TABLE workers ADD COLUMN IF NOT EXISTS is_active BOOLEAN DEFAULT TRUE")
+            cur.execute("UPDATE workers SET is_active = TRUE WHERE is_active IS NULL")
+            cur.execute("ALTER TABLE orders ADD COLUMN IF NOT EXISTS status TEXT DEFAULT 'new'")
+            cur.execute("ALTER TABLE orders ADD COLUMN IF NOT EXISTS accepted_worker_id BIGINT")
+            cur.execute("ALTER TABLE orders ADD COLUMN IF NOT EXISTS accepted_worker_name TEXT")
+            cur.execute("ALTER TABLE orders ADD COLUMN IF NOT EXISTS accepted_at TIMESTAMPTZ")
+            cur.execute("UPDATE orders SET status = 'new' WHERE status IS NULL")
         conn.commit()
 
 
-# =========================================================
-# SERVICE NORMALIZATION
-# =========================================================
-
-def normalize_service_name(text):
-
-    if not text:
-        return ""
-
-    text = str(text).casefold()
-
-    text = re.sub(
-        r"[🔧⚡📱💻🧹🪑👨‍🔧]",
-        "",
-        text,
-    )
-
-    replacements = {
-        "а": "a",
-        "б": "b",
-        "в": "v",
-        "г": "g",
-        "д": "d",
-        "е": "e",
-        "ё": "yo",
-        "ж": "j",
-        "з": "z",
-        "и": "i",
-        "й": "y",
-        "к": "k",
-        "л": "l",
-        "м": "m",
-        "н": "n",
-        "о": "o",
-        "п": "p",
-        "р": "r",
-        "с": "s",
-        "т": "t",
-        "у": "u",
-        "ф": "f",
-        "х": "x",
-        "ц": "ts",
-        "ч": "ch",
-        "ш": "sh",
-        "щ": "sh",
-        "ъ": "",
-        "ы": "y",
-        "ь": "",
-        "э": "e",
-        "ю": "yu",
-        "я": "ya",
-        "қ": "q",
-        "ғ": "g",
-        "ҳ": "h",
-        "ў": "o",
-    }
-
-    for old, new in replacements.items():
-        text = text.replace(old, new)
-
-    text = re.sub(
-        r"[^a-z0-9\s]",
-        " ",
-        text,
-    )
-
-    text = re.sub(
-        r"\s+",
-        " ",
-        text,
-    )
-
-    return text.strip()
-
-
-def canonical_service(text):
-
-    normalized = normalize_service_name(text)
-
-    if not normalized:
-        return ""
-
-    if (
-        "kompyuter" in normalized
-        or "komyuter" in normalized
-        or "komputer" in normalized
-    ):
-        return "kompyuter"
-
-    if (
-        "santexnik" in normalized
-        or "santehnik" in normalized
-    ):
-        return "santexnik"
-
-    if "elektrik" in normalized:
-        return "elektrik"
-
-    if "telefon" in normalized:
-        return "telefon"
-
-    if (
-        "uy tozalash" in normalized
-        or "tozalash" in normalized
-    ):
-        return "tozalash"
-
-    if "mebel" in normalized:
-        return "mebel"
-
-    return normalized
-
-
-def service_matches(selected_service, worker_services):
-
-    selected = canonical_service(selected_service)
-
-    if not selected or not worker_services:
-        return False
-
-    parts = re.split(
-        r"[,;/\n]+",
-        str(worker_services),
-    )
-
-    for part in parts:
-
-        worker_service = canonical_service(part)
-
-        if worker_service == selected:
-            return True
-
-    return False
-
-
-# =========================================================
-# MAIN MENU
-# =========================================================
-
-def main_menu():
-
-    keyboard = [
-        [
-            "🔧 Хизматлар",
-            "👨‍🔧 Уста чақириш",
-        ],
-        [
-            "📢 Эълон бериш",
-            "Алоқа",
-        ],
-        [
-            "👤 Менинг профилим",
-        ],
-    ]
-
-    return ReplyKeyboardMarkup(
-        keyboard,
-        resize_keyboard=True,
-    )
-
-
-# =========================================================
-# SERVICES MENU
-# =========================================================
-
-def services_menu():
-
-    keyboard = [
-        [
-            "🔧 Сантехник",
-            "⚡ Электрик",
-        ],
-        [
-            "📱 Телефон таъмири",
-            "💻 Компьютер таъмири",
-        ],
-        [
-            "🧹 Уй тозалаш",
-            "🪑 Мебель таъмири",
-        ],
-        [
-            "⬅️ Орқа",
-        ],
-    ]
-
-    return ReplyKeyboardMarkup(
-        keyboard,
-        resize_keyboard=True,
-    )
-
-
-# =========================================================
-# START
-# =========================================================
-
-async def start(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE,
-):
-
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data.clear()
-
     await update.message.reply_text(
-        "🛠 Osh Service ботга хуш келибсиз!\n\n"
-        "Керакли хизматни танланг:",
-        reply_markup=main_menu(),
+        "Osh Service ботга хуш келибсиз!\n\nКеракли хизматни танланг:",
+        reply_markup=main_keyboard(),
     )
 
 
-# =========================================================
-# HELP
-# =========================================================
-
-async def help_command(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE,
-):
-
+async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "📖 Ботдан фойдаланиш:\n\n"
-        "🔧 Хизматлар — уста топиш\n"
-        "👨‍🔧 Уста чақириш — уста бўлиб рўйхатдан ўтиш\n"
-        "📢 Эълон бериш — хизмат ёки иш ҳақида эълон бериш\n"
-        "👤 Менинг профилим — маълумотларингизни кўриш\n\n"
-        "/cancel — жорий жараённи бекор қилиш"
+        "ℹ️ Osh Service\n\n"
+        "🔧 Хизматлар — мавжуд хизматлар\n"
+        "👨‍🔧 Уста чақириш — уста буюртма қилиш\n"
+        "📢 Эълон бериш — хизмат/иш ҳақида эълон\n"
+        "👤 Менинг профилим — уста профили\n"
+        "Алоқа — администратор билан боғланиш"
     )
 
 
-# =========================================================
-# CANCEL
-# =========================================================
+async def show_services(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("🔧 Хизматлар:", reply_markup=services_keyboard())
 
-async def cancel(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE,
-):
 
-    context.user_data.clear()
-
-    await update.message.reply_text(
-        "❌ Жараён бекор қилинди.",
-        reply_markup=main_menu(),
-    )
-
-    return ConversationHandler.END
-
-
-# =========================================================
-# SERVICES
-# =========================================================
-
-async def services(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE,
-):
-
-    await update.message.reply_text(
-        "🔧 Қайси хизмат керак?",
-        reply_markup=services_menu(),
-    )
-
-
-# =========================================================
-# CUSTOMER ORDER STATES
-# =========================================================
-
-NAME, PHONE, ADDRESS, PROBLEM = range(4)
-
-
-# =========================================================
-# START CUSTOMER ORDER
-# =========================================================
-
-async def customer_start(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE,
-):
-
-    service = update.message.text.strip()
-
-    context.user_data["service"] = service
-
-    await update.message.reply_text(
-        "👤 Исмингизни ёзинг:"
-    )
-
-    return NAME
-
-
-# =========================================================
-# CUSTOMER NAME
-# =========================================================
-
-async def customer_name(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE,
-):
-
-    name = update.message.text.strip()
-
-    if not name:
-
-        await update.message.reply_text(
-            "❗ Исмингизни ёзинг:"
-        )
-
-        return NAME
-
-    context.user_data["name"] = name
-
-    await update.message.reply_text(
-        "📞 Телефон рақамингизни ёзинг:"
-    )
-
-    return PHONE
-
-
-# =========================================================
-# CUSTOMER PHONE
-# =========================================================
-
-async def customer_phone(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE,
-):
-
-    phone = update.message.text.strip()
-
-    digits = re.sub(
-        r"\D",
-        "",
-        phone,
-    )
-
-    if len(digits) < 7:
-
-        await update.message.reply_text(
-            "❗ Телефон рақами нотўғри.\n"
-            "Илтимос, телефон рақамингизни қайта ёзинг:"
-        )
-
-        return PHONE
-
-    context.user_data["phone"] = phone
-
-    await update.message.reply_text(
-        "📍 Манзилингизни ёзинг:"
-    )
-
-    return ADDRESS
-
-
-# =========================================================
-# CUSTOMER ADDRESS
-# =========================================================
-
-async def customer_address(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE,
-):
-
-    address = update.message.text.strip()
-
-    if not address:
-
-        await update.message.reply_text(
-            "❗ Манзилни ёзинг:"
-        )
-
-        return ADDRESS
-
-    context.user_data["address"] = address
-
-    await update.message.reply_text(
-        "📝 Муаммони ёзинг:"
-    )
-
-    return PROBLEM
-
-
-# =========================================================
-# CUSTOMER PROBLEM
-# =========================================================
-
-async def customer_problem(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE,
-):
-
-    problem = update.message.text.strip()
-
-    if not problem:
-
-        await update.message.reply_text(
-            "❗ Муаммони ёзинг:"
-        )
-
-        return PROBLEM
-
-    context.user_data["problem"] = problem
-
-    user = update.effective_user
-
-    data = context.user_data
-
-    order_id = None
-
-    matching_workers = []
-
-    # =====================================================
-    # SAVE ORDER + FIND ACTIVE MATCHING WORKERS
-    # =====================================================
-
-    with get_connection() as conn:
-
-        with conn.cursor() as cur:
-
-            cur.execute(
-                """
-                INSERT INTO orders
-                (
-                    telegram_id,
-                    name,
-                    phone,
-                    service,
-                    address,
-                    problem,
-                    status
-                )
-                VALUES (%s, %s, %s, %s, %s, %s, 'new')
-                RETURNING id
-                """,
-                (
-                    user.id,
-                    data["name"],
-                    data["phone"],
-                    data["service"],
-                    data["address"],
-                    data["problem"],
-                ),
-            )
-
-            result = cur.fetchone()
-
-            if result:
-                order_id = result[0]
-
-            # Фақат ФАОЛ усталар
-            cur.execute(
-                """
-                SELECT
-                    telegram_id,
-                    name,
-                    service,
-                    area,
-                    price
-                FROM workers
-                WHERE is_active = TRUE
-                ORDER BY id DESC
-                """
-            )
-
-            rows = cur.fetchall()
-
-            for row in rows:
-
-                worker_service = row[2]
-
-                if service_matches(
-                    data["service"],
-                    worker_service,
-                ):
-                    matching_workers.append(row)
-
-        conn.commit()
-
-    # =====================================================
-    # SEND ORDER TO ACTIVE WORKERS
-    # =====================================================
-
-    sent_count = 0
-
-    sent_worker_ids = set()
-
-    for worker in matching_workers:
-
-        worker_telegram_id = worker[0]
-        worker_name = worker[1]
-
-        if not worker_telegram_id:
-
-            logger.warning(
-                f"Worker {worker_name} has no telegram_id"
-            )
-
-            continue
-
-        worker_telegram_id = int(
-            worker_telegram_id
-        )
-
-        if worker_telegram_id in sent_worker_ids:
-
-            logger.info(
-                f"Order #{order_id} already sent to "
-                f"worker {worker_name} "
-                f"(telegram_id={worker_telegram_id}), "
-                f"skipping duplicate"
-            )
-
-            continue
-
-        sent_worker_ids.add(
-            worker_telegram_id
-        )
-
-        keyboard = [
-            [
-                InlineKeyboardButton(
-                    "✅ Буюртмани оламан",
-                    callback_data=f"accept_order:{order_id}",
-                )
-            ]
-        ]
-
-        reply_markup = InlineKeyboardMarkup(
-            keyboard
-        )
-
-        worker_message = (
-            "🔔 ЯНГИ БУЮРТМА!\n\n"
-            f"📌 Буюртма №{order_id}\n\n"
-            f"👤 Исм: {data['name']}\n"
-            f"📞 Телефон: {data['phone']}\n"
-            f"🔧 Хизмат: {data['service']}\n"
-            f"📍 Манзил: {data['address']}\n"
-            f"📝 Муаммо: {data['problem']}\n\n"
-            "📲 Агар буюртмани олишни истасангиз, "
-            "пастдаги тугмани босинг."
-        )
-
-        try:
-
-            await context.bot.send_message(
-                chat_id=worker_telegram_id,
-                text=worker_message,
-                reply_markup=reply_markup,
-            )
-
-            sent_count += 1
-
-            logger.info(
-                f"Order #{order_id} sent to worker "
-                f"{worker_name} "
-                f"(telegram_id={worker_telegram_id})"
-            )
-
-        except Exception as e:
-
-            logger.exception(
-                f"Failed to send order #{order_id} "
-                f"to worker {worker_name} "
-                f"(telegram_id={worker_telegram_id}): {e}"
-            )
-
-    # =====================================================
-    # RESULT
-    # =====================================================
-
-    if sent_count > 0:
-
-        worker_result_text = (
-            f"👨‍🔧 {sent_count} та мос устага "
-            "буюртма юборилди."
-        )
-
-    elif matching_workers:
-
-        worker_result_text = (
-            "⚠️ Мос уста топилди, лекин унга "
-            "Telegram хабарини юбориб бўлмади."
-        )
-
-    else:
-
-        worker_result_text = (
-            "ℹ️ Ҳозирча бу хизмат бўйича "
-            "мос уста топилмади."
-        )
-
-    # =====================================================
-    # CUSTOMER CONFIRMATION
-    # =====================================================
-
-    await update.message.reply_text(
-        "🔔 ЯНГИ БУЮРТМА!\n\n"
-        f"📌 Буюртма №{order_id}\n"
-        f"👤 Исм: {data['name']}\n"
-        f"📞 Телефон: {data['phone']}\n"
-        f"🔧 Хизмат: {data['service']}\n"
-        f"📍 Манзил: {data['address']}\n"
-        f"📝 Муаммо: {data['problem']}\n\n"
-        "✅ Буюртмангиз қабул қилинди.\n"
-        f"{worker_result_text}",
-        reply_markup=main_menu(),
-    )
-
-    context.user_data.clear()
-
-    return ConversationHandler.END
-
-
-# =========================================================
-# ACCEPT ORDER CALLBACK
-# =========================================================
-
-async def accept_order_callback(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE,
-):
-
-    query = update.callback_query
-
-    await query.answer()
-
-    worker_telegram_id = update.effective_user.id
-
-    try:
-
-        order_id = int(
-            query.data.split(":")[1]
-        )
-
-    except Exception:
-
-        await query.message.reply_text(
-            "❌ Буюртма рақами нотўғри."
-        )
-
+async def service_selected(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    service = update.message.text
+    if service not in SERVICES:
         return
-
-    worker_name = None
-    customer_telegram_id = None
-    order_data = None
-
-    with get_connection() as conn:
-
-        with conn.cursor() as cur:
-
-            cur.execute(
-                """
-                SELECT name
-                FROM workers
-                WHERE telegram_id = %s
-                  AND is_active = TRUE
-                ORDER BY id DESC
-                LIMIT 1
-                """,
-                (worker_telegram_id,),
-            )
-
-            worker = cur.fetchone()
-
-            if not worker:
-
-                await query.message.reply_text(
-                    "❌ Сизнинг уста профилингиз ҳозир НОФАОЛ "
-                    "ёки уста сифатида рўйхатдан ўтмагансиз."
-                )
-
-                return
-
-            worker_name = worker[0]
-
-            cur.execute(
-                """
-                UPDATE orders
-                SET
-                    status = 'accepted',
-                    accepted_worker_id = %s,
-                    accepted_worker_name = %s,
-                    accepted_at = NOW()
-                WHERE id = %s
-                  AND status = 'new'
-                RETURNING
-                    id,
-                    telegram_id,
-                    name,
-                    phone,
-                    service,
-                    address,
-                    problem
-                """,
-                (
-                    worker_telegram_id,
-                    worker_name,
-                    order_id,
-                ),
-            )
-
-            accepted_order = cur.fetchone()
-
-            if accepted_order:
-
-                order_data = accepted_order
-
-                customer_telegram_id = accepted_order[1]
-
-        conn.commit()
-
-    if not order_data:
-
-        await query.edit_message_reply_markup(
-            reply_markup=None
-        )
-
-        await query.message.reply_text(
-            "⚠️ Бу буюртма аллақачон бошқа уста "
-            "томонидан қабул қилинган."
-        )
-
-        return
-
-    await query.edit_message_reply_markup(
-        reply_markup=None
-    )
-
-    await query.message.reply_text(
-        "✅ Буюртмани сиз қабул қилдингиз!\n\n"
-        f"📌 Буюртма №{order_id}\n"
-        f"👤 Мижоз: {order_data[2]}\n"
-        f"📞 Телефон: {order_data[3]}\n"
-        f"📍 Манзил: {order_data[5]}\n"
-        f"📝 Муаммо: {order_data[6]}\n\n"
-        "📲 Мижоз билан боғланинг."
-    )
-
-    if customer_telegram_id:
-
-        try:
-
-            await context.bot.send_message(
-                chat_id=int(customer_telegram_id),
-                text=(
-                    "✅ БУЮРТМАНГИЗНИ УСТА ҚАБУЛ ҚИЛДИ!\n\n"
-                    f"📌 Буюртма №{order_id}\n\n"
-                    f"👨‍🔧 Уста: {worker_name}\n"
-                    f"📞 Устанинг рақами: "
-                    f"{await get_worker_phone(worker_telegram_id)}\n\n"
-                    "📲 Уста тез орада сиз билан боғланади."
-                ),
-            )
-
-            logger.info(
-                f"Order #{order_id} accepted by "
-                f"{worker_name} "
-                f"(telegram_id={worker_telegram_id})"
-            )
-
-        except Exception as e:
-
-            logger.exception(
-                f"Failed to notify customer "
-                f"for order #{order_id}: {e}"
-            )
-
-
-# =========================================================
-# GET WORKER PHONE
-# =========================================================
-
-async def get_worker_phone(
-    worker_telegram_id
-):
-
-    with get_connection() as conn:
-
-        with conn.cursor() as cur:
-
-            cur.execute(
-                """
-                SELECT phone
-                FROM workers
-                WHERE telegram_id = %s
-                ORDER BY id DESC
-                LIMIT 1
-                """,
-                (worker_telegram_id,),
-            )
-
-            row = cur.fetchone()
-
-    if row and row[0]:
-        return str(row[0])
-
-    return "кўрсатилмаган"
-
-
-# =========================================================
-# WORKER REGISTRATION STATES
-# =========================================================
-
-WORKER_NAME, WORKER_PHONE, WORKER_SERVICE, WORKER_AREA, WORKER_PRICE = range(
-    5, 10
-)
-
-
-# =========================================================
-# START WORKER REGISTRATION
-# =========================================================
-
-async def worker_start(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE,
-):
-
+    context.user_data["selected_service"] = service
     await update.message.reply_text(
-        "👨‍🔧 Уста бўлиб рўйхатдан ўтиш.\n\n"
-        "👤 Исм-фамилиянгизни ёзинг:"
+        f"✅ Танланди: {service}\n\nУста чақириш учун «👨‍🔧 Уста чақириш»ни босинг.",
+        reply_markup=main_keyboard(),
     )
 
+
+async def worker_register_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    context.user_data.clear()
+    await update.message.reply_text("👨‍🔧 Уста бўлиб рўйхатдан ўтиш\n\n👤 Исмингизни ёзинг:")
     return WORKER_NAME
 
 
-# =========================================================
-# WORKER NAME
-# =========================================================
-
-async def worker_name(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE,
-):
-
-    name = update.message.text.strip()
-
-    if not name:
-
-        await update.message.reply_text(
-            "❗ Исмингизни ёзинг:"
-        )
-
-        return WORKER_NAME
-
-    context.user_data["worker_name"] = name
-
-    await update.message.reply_text(
-        "📞 Телефон рақамингизни ёзинг:"
+async def worker_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    keyboard = ReplyKeyboardMarkup(
+        [["👨‍🔧 Уста бўлиб рўйхатдан ўтиш"], ["👤 Менинг профилим"], ["⬅️ Бош меню"]],
+        resize_keyboard=True,
     )
+    await update.message.reply_text("👨‍🔧 Уста бўлими:", reply_markup=keyboard)
 
+
+async def worker_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    name = update.message.text.strip()
+    if not name:
+        await update.message.reply_text("❗ Исмни бўш қолдирманг.")
+        return WORKER_NAME
+    context.user_data["worker_name"] = name
+    await update.message.reply_text("📞 Телефон рақамингизни ёзинг:")
     return WORKER_PHONE
 
 
-# =========================================================
-# WORKER PHONE
-# =========================================================
-
-async def worker_phone(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE,
-):
-
+async def worker_phone(update: Update, context: ContextTypes.DEFAULT_TYPE):
     phone = update.message.text.strip()
-
-    digits = re.sub(
-        r"\D",
-        "",
-        phone,
-    )
-
-    if len(digits) < 7:
-
-        await update.message.reply_text(
-            "❗ Телефон рақами нотўғри.\n"
-            "Илтимос, қайта ёзинг:"
-        )
-
+    if len(re.sub(r"\D", "", phone)) < 7:
+        await update.message.reply_text("❗ Телефон рақами нотўғри. Қайта ёзинг:")
         return WORKER_PHONE
-
     context.user_data["worker_phone"] = phone
-
-    await update.message.reply_text(
-        "🔧 Қайси хизматларни қиласиз?\n\n"
-        "Бир нечта хизмат бўлса, вергул билан ёзинг.\n\n"
-        "Масалан:\n"
-        "Elektrik, santehnik, ariston"
-    )
-
+    await update.message.reply_text("🔧 Қайси хизматни кўрсатасиз?", reply_markup=worker_services_keyboard())
     return WORKER_SERVICE
 
 
-# =========================================================
-# WORKER SERVICE
-# =========================================================
-
-async def worker_service(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE,
-):
-
+async def worker_service(update: Update, context: ContextTypes.DEFAULT_TYPE):
     service = update.message.text.strip()
-
     if not service:
-
-        await update.message.reply_text(
-            "❗ Хизматингизни ёзинг:"
-        )
-
+        await update.message.reply_text("❗ Хизматни киритинг.")
         return WORKER_SERVICE
-
     context.user_data["worker_service"] = service
-
-    await update.message.reply_text(
-        "📍 Қайси ҳудудда ишлайсиз?"
-    )
-
+    await update.message.reply_text("📍 Ҳудудингизни ёзинг:")
     return WORKER_AREA
 
 
-# =========================================================
-# WORKER AREA
-# =========================================================
-
-async def worker_area(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE,
-):
-
+async def worker_area(update: Update, context: ContextTypes.DEFAULT_TYPE):
     area = update.message.text.strip()
-
     if not area:
-
-        await update.message.reply_text(
-            "❗ Ҳудудни ёзинг:"
-        )
-
+        await update.message.reply_text("❗ Ҳудудни бўш қолдирманг.")
         return WORKER_AREA
-
     context.user_data["worker_area"] = area
-
-    await update.message.reply_text(
-        "💰 Хизмат нархингизни ёзинг:"
-    )
-
+    await update.message.reply_text("💰 Хизмат нархингизни ёзинг:")
     return WORKER_PRICE
 
 
-# =========================================================
-# WORKER PRICE
-# =========================================================
-
-async def worker_price(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE,
-):
-
+async def worker_price(update: Update, context: ContextTypes.DEFAULT_TYPE):
     price = update.message.text.strip()
-
     if not price:
-
-        await update.message.reply_text(
-            "❗ Нарҳни ёзинг:"
-        )
-
+        await update.message.reply_text("❗ Нарҳни киритинг.")
         return WORKER_PRICE
 
     context.user_data["worker_price"] = price
-
+    data = context.user_data
     user = update.effective_user
 
-    data = context.user_data
-
-    # =====================================================
-    # SAVE / UPDATE WORKER
-    # =====================================================
-
     with get_connection() as conn:
-
         with conn.cursor() as cur:
-
+            # One Telegram account = one current profile. Old duplicate rows are not created.
             cur.execute(
-                """
-                SELECT id
-                FROM workers
-                WHERE telegram_id = %s
-                ORDER BY id DESC
-                LIMIT 1
-                """,
+                "SELECT id FROM workers WHERE telegram_id = %s ORDER BY id DESC LIMIT 1",
                 (user.id,),
             )
-
-            existing_worker = cur.fetchone()
-
-            if existing_worker:
-
-                # Мавжуд профильни янгилаймиз
+            existing = cur.fetchone()
+            if existing:
                 cur.execute(
                     """
                     UPDATE workers
-                    SET
-                        name = %s,
-                        phone = %s,
-                        service = %s,
-                        area = %s,
-                        price = %s,
-                        is_active = TRUE
-                    WHERE id = %s
+                    SET name=%s, phone=%s, service=%s, area=%s, price=%s, is_active=TRUE
+                    WHERE id=%s
                     """,
                     (
-                        data["worker_name"],
-                        data["worker_phone"],
-                        data["worker_service"],
-                        data["worker_area"],
-                        data["worker_price"],
-                        existing_worker[0],
+                        data["worker_name"], data["worker_phone"], data["worker_service"],
+                        data["worker_area"], data["worker_price"], existing[0],
                     ),
                 )
-
             else:
-
-                # Янги уста
                 cur.execute(
                     """
-                    INSERT INTO workers
-                    (
-                        telegram_id,
-                        name,
-                        phone,
-                        service,
-                        area,
-                        price,
-                        is_active
-                    )
-                    VALUES (%s, %s, %s, %s, %s, %s, TRUE)
+                    INSERT INTO workers (telegram_id, name, phone, service, area, price, is_active)
+                    VALUES (%s,%s,%s,%s,%s,%s,TRUE)
                     """,
                     (
-                        user.id,
-                        data["worker_name"],
-                        data["worker_phone"],
-                        data["worker_service"],
-                        data["worker_area"],
-                        data["worker_price"],
+                        user.id, data["worker_name"], data["worker_phone"], data["worker_service"],
+                        data["worker_area"], data["worker_price"],
                     ),
                 )
-
         conn.commit()
 
     await update.message.reply_text(
-        "✅ Сиз уста сифатида рўйхатдан ўтдингиз!\n\n"
+        "✅ Уста профилингиз сақланди!\n\n"
         f"👤 Исм: {data['worker_name']}\n"
         f"📞 Телефон: {data['worker_phone']}\n"
         f"🔧 Хизмат: {data['worker_service']}\n"
         f"📍 Ҳудуд: {data['worker_area']}\n"
         f"💰 Нархи: {data['worker_price']}\n"
-        "📊 Ҳолат: 🟢 Фаол",
-        reply_markup=main_menu(),
+        "🟢 Ҳолат: Фаол",
+        reply_markup=main_keyboard(),
     )
-
     context.user_data.clear()
-
     return ConversationHandler.END
 
 
-# =========================================================
-# ANNOUNCEMENT STATES
-# =========================================================
-
-ANNOUNCEMENT_NAME = 10
-ANNOUNCEMENT_PHONE = 11
-ANNOUNCEMENT_SERVICE = 12
-ANNOUNCEMENT_ADDRESS = 13
-ANNOUNCEMENT_BUDGET = 14
-ANNOUNCEMENT_DETAILS = 15
-
-
-# =========================================================
-# START ANNOUNCEMENT
-# =========================================================
-
-async def announcement_start(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE,
-):
-
-    await update.message.reply_text(
-        "📢 Эълон бериш.\n\n"
-        "👤 Исмингизни ёзинг:"
-    )
-
-    return ANNOUNCEMENT_NAME
-
-
-# =========================================================
-# ANNOUNCEMENT NAME
-# =========================================================
-
-async def announcement_name(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE,
-):
-
-    name = update.message.text.strip()
-
-    if not name:
-
-        await update.message.reply_text(
-            "❗ Исмингизни ёзинг:"
-        )
-
-        return ANNOUNCEMENT_NAME
-
-    context.user_data["announcement_name"] = name
-
-    await update.message.reply_text(
-        "📞 Телефон рақамингизни ёзинг:"
-    )
-
-    return ANNOUNCEMENT_PHONE
-
-
-# =========================================================
-# ANNOUNCEMENT PHONE
-# =========================================================
-
-async def announcement_phone(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE,
-):
-
-    phone = update.message.text.strip()
-
-    digits = re.sub(
-        r"\D",
-        "",
-        phone,
-    )
-
-    if len(digits) < 7:
-
-        await update.message.reply_text(
-            "❗ Телефон рақами нотўғри.\n"
-            "Илтимос, қайта ёзинг:"
-        )
-
-        return ANNOUNCEMENT_PHONE
-
-    context.user_data["announcement_phone"] = phone
-
-    await update.message.reply_text(
-        "🔧 Қандай хизмат керак?"
-    )
-
-    return ANNOUNCEMENT_SERVICE
-
-
-# =========================================================
-# ANNOUNCEMENT SERVICE
-# =========================================================
-
-async def announcement_service(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE,
-):
-
+async def order_from_service(update: Update, context: ContextTypes.DEFAULT_TYPE):
     service = update.message.text.strip()
-
-    if not service:
-
-        await update.message.reply_text(
-            "❗ Хизматни ёзинг:"
-        )
-
-        return ANNOUNCEMENT_SERVICE
-
-    context.user_data["announcement_service"] = service
-
-    await update.message.reply_text(
-        "📍 Манзилни ёзинг:"
-    )
-
-    return ANNOUNCEMENT_ADDRESS
+    if service not in SERVICES:
+        await update.message.reply_text("❗ Хизматни тугмалардан танланг:", reply_markup=services_keyboard())
+        return ORDER_NAME
+    context.user_data.clear()
+    context.user_data["order_service"] = service
+    await update.message.reply_text(f"✅ Хизмат: {service}\n\n👤 Исмингизни ёзинг:")
+    return ORDER_NAME
 
 
-# =========================================================
-# ANNOUNCEMENT ADDRESS
-# =========================================================
+async def customer_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    # This handler is used after service selection in the order conversation.
+    name = update.message.text.strip()
+    if not name:
+        await update.message.reply_text("❗ Исмни бўш қолдирманг.")
+        return ORDER_NAME
+    context.user_data["order_name"] = name
+    await update.message.reply_text("📞 Телефон рақамингизни ёзинг:")
+    return ORDER_PHONE
 
-async def announcement_address(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE,
-):
 
+async def customer_phone(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    phone = update.message.text.strip()
+    if len(re.sub(r"\D", "", phone)) < 7:
+        await update.message.reply_text("❗ Телефон рақами нотўғри. Қайта ёзинг:")
+        return ORDER_PHONE
+    context.user_data["order_phone"] = phone
+    await update.message.reply_text("📍 Манзилингизни ёзинг:")
+    return ORDER_ADDRESS
+
+
+async def customer_address(update: Update, context: ContextTypes.DEFAULT_TYPE):
     address = update.message.text.strip()
-
     if not address:
-
-        await update.message.reply_text(
-            "❗ Манзилни ёзинг:"
-        )
-
-        return ANNOUNCEMENT_ADDRESS
-
-    context.user_data["announcement_address"] = address
-
-    await update.message.reply_text(
-        "💰 Бюджетингизни ёзинг:"
-    )
-
-    return ANNOUNCEMENT_BUDGET
+        await update.message.reply_text("❗ Манзилни бўш қолдирманг.")
+        return ORDER_ADDRESS
+    context.user_data["order_address"] = address
+    await update.message.reply_text("📝 Муаммони қисқача ёзинг:")
+    return ORDER_PROBLEM
 
 
-# =========================================================
-# ANNOUNCEMENT BUDGET
-# =========================================================
-
-async def announcement_budget(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE,
-):
-
-    budget = update.message.text.strip()
-
-    if not budget:
-
-        await update.message.reply_text(
-            "❗ Бюджетни ёзинг:"
-        )
-
-        return ANNOUNCEMENT_BUDGET
-
-    context.user_data["announcement_budget"] = budget
-
-    await update.message.reply_text(
-        "📝 Эълон тафсилотларини ёзинг:"
-    )
-
-    return ANNOUNCEMENT_DETAILS
-
-
-# =========================================================
-# ANNOUNCEMENT DETAILS
-# =========================================================
-
-async def announcement_details(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE,
-):
-
-    details = update.message.text.strip()
-
-    if not details:
-
-        await update.message.reply_text(
-            "❗ Тафсилотларни ёзинг:"
-        )
-
-        return ANNOUNCEMENT_DETAILS
-
-    context.user_data["announcement_details"] = details
-
-    user = update.effective_user
+async def customer_problem(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    problem = update.message.text.strip()
+    if not problem:
+        await update.message.reply_text("❗ Муаммони ёзинг.")
+        return ORDER_PROBLEM
 
     data = context.user_data
-
-    with get_connection() as conn:
-
-        with conn.cursor() as cur:
-
-            cur.execute(
-                """
-                INSERT INTO announcements
-                (
-                    telegram_id,
-                    name,
-                    phone,
-                    service,
-                    address,
-                    budget,
-                    details
-                )
-                VALUES (%s, %s, %s, %s, %s, %s, %s)
-                """,
-                (
-                    user.id,
-                    data["announcement_name"],
-                    data["announcement_phone"],
-                    data["announcement_service"],
-                    data["announcement_address"],
-                    data["announcement_budget"],
-                    data["announcement_details"],
-                ),
-            )
-
-        conn.commit()
-
-    await update.message.reply_text(
-        "✅ Эълонингиз қабул қилинди!\n\n"
-        f"👤 Исм: {data['announcement_name']}\n"
-        f"📞 Телефон: {data['announcement_phone']}\n"
-        f"🔧 Хизмат: {data['announcement_service']}\n"
-        f"📍 Манзил: {data['announcement_address']}\n"
-        f"💰 Бюджет: {data['announcement_budget']}\n"
-        f"📝 {data['announcement_details']}",
-        reply_markup=main_menu(),
-    )
-
-    context.user_data.clear()
-
-    return ConversationHandler.END
-
-
-# =========================================================
-# MY PROFILE
-# =========================================================
-
-async def my_profile(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE,
-):
-
     user = update.effective_user
 
     with get_connection() as conn:
-
         with conn.cursor() as cur:
-
             cur.execute(
                 """
-                SELECT
-                    id,
-                    name,
-                    phone,
-                    service,
-                    area,
-                    price,
-                    is_active,
-                    created_at
+                INSERT INTO orders (telegram_id,name,phone,service,address,problem,status)
+                VALUES (%s,%s,%s,%s,%s,%s,'new')
+                RETURNING id
+                """,
+                (
+                    user.id, data["order_name"], data["order_phone"], data["order_service"],
+                    data["order_address"], problem,
+                ),
+            )
+            order_id = cur.fetchone()[0]
+            cur.execute(
+                """
+                SELECT telegram_id, name, service, area, price
                 FROM workers
-                WHERE telegram_id = %s
+                WHERE COALESCE(is_active, TRUE) = TRUE
+                ORDER BY id DESC
+                """
+            )
+            workers = cur.fetchall()
+        conn.commit()
+
+    sent_ids = set()
+    selected = data["order_service"]
+    message = (
+        f"🔔 ЯНГИ БУЮРТМА #{order_id}\n\n"
+        f"🔧 Хизмат: {selected}\n"
+        f"👤 Мижоз: {data['order_name']}\n"
+        f"📞 Телефон: {data['order_phone']}\n"
+        f"📍 Манзил: {data['order_address']}\n"
+        f"📝 Муаммо: {problem}\n\n"
+        "Буюртмани олиш учун тугмани босинг."
+    )
+
+    for worker_id, worker_name, worker_service, worker_area, worker_price in workers:
+        if worker_id in sent_ids:
+            continue
+        if not service_matches(selected, worker_service):
+            continue
+        sent_ids.add(worker_id)
+        keyboard = InlineKeyboardMarkup(
+            [[InlineKeyboardButton("✅ Буюртмани оламан", callback_data=f"accept_order:{order_id}")]]
+        )
+        try:
+            await context.bot.send_message(worker_id, message, reply_markup=keyboard)
+        except Exception as exc:
+            logger.warning("Worker notification failed for %s: %s", worker_id, exc)
+
+    await update.message.reply_text(
+        f"✅ Буюртмангиз қабул қилинди!\n\nБуюртма рақами: #{order_id}\n"
+        "Фаол устага хабар юборилди. Уста қабул қилса, сизга унинг маълумотлари келади.",
+        reply_markup=main_keyboard(),
+    )
+    context.user_data.clear()
+    return ConversationHandler.END
+
+
+async def accept_order_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    user = update.effective_user
+
+    try:
+        order_id = int(query.data.split(":", 1)[1])
+    except Exception:
+        await query.message.reply_text("❗ Буюртма рақами нотўғри.")
+        return
+
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT id, name, phone, is_active
+                FROM workers
+                WHERE telegram_id=%s
                 ORDER BY id DESC
                 LIMIT 1
                 """,
                 (user.id,),
             )
-
             worker = cur.fetchone()
+            if not worker:
+                await query.message.reply_text("❗ Сизда уста профили мавжуд эмас.")
+                return
+            if worker[3] is False:
+                await query.message.reply_text("🔴 Профилингиз нофаол. Янги буюртмаларни қабул қила олмайсиз.")
+                return
 
-    if not worker:
-
-        await update.message.reply_text(
-            "👤 Сизда ҳозирча уста профили йўқ.\n\n"
-            "👨‍🔧 Уста бўлиб рўйхатдан ўтишингиз мумкин.",
-            reply_markup=main_menu(),
-        )
-
-        return
-
-    worker_id = worker[0]
-
-    if worker[6]:
-
-        status_text = "🟢 Фаол"
-
-        button_text = "🔴 Нофаол қилиш"
-
-        callback_data = (
-            f"profile_deactivate:{worker_id}"
-        )
-
-    else:
-
-        status_text = "🔴 Нофаол"
-
-        button_text = "🟢 Фаол қилиш"
-
-        callback_data = (
-            f"profile_activate:{worker_id}"
-        )
-
-    keyboard = [
-        [
-            InlineKeyboardButton(
-                button_text,
-                callback_data=callback_data,
-            )
-        ]
-    ]
-
-    await update.message.reply_text(
-        "👤 МЕНИНГ ПРОФИЛИМ\n\n"
-        f"👤 Исм: {worker[1]}\n"
-        f"📞 Телефон: {worker[2]}\n"
-        f"🔧 Хизмат: {worker[3]}\n"
-        f"📍 Ҳудуд: {worker[4]}\n"
-        f"💰 Нархи: {worker[5]}\n"
-        f"📊 Ҳолат: {status_text}\n"
-        f"🕒 Рўйхатдан ўтган: {worker[7]}",
-        reply_markup=InlineKeyboardMarkup(keyboard),
-    )
-
-
-# =========================================================
-# PROFILE STATUS CALLBACK
-# =========================================================
-
-async def profile_status_callback(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE,
-):
-
-    query = update.callback_query
-
-    await query.answer()
-
-    user = update.effective_user
-
-    try:
-
-        action, worker_id = query.data.split(":")
-
-        worker_id = int(worker_id)
-
-    except Exception:
-
-        await query.message.reply_text(
-            "❌ Профиль маълумоти нотўғри."
-        )
-
-        return
-
-    new_status = action == "profile_activate"
-
-    with get_connection() as conn:
-
-        with conn.cursor() as cur:
-
+            worker_id, worker_name, worker_phone, _ = worker
             cur.execute(
                 """
-                UPDATE workers
-                SET is_active = %s
-                WHERE id = %s
-                  AND telegram_id = %s
-                RETURNING
-                    name,
-                    phone,
-                    service,
-                    area,
-                    price,
-                    is_active,
-                    created_at
+                UPDATE orders
+                SET status='accepted', accepted_worker_id=%s, accepted_worker_name=%s, accepted_at=NOW()
+                WHERE id=%s AND status='new'
+                RETURNING telegram_id, name, service, address, problem
                 """,
-                (
-                    new_status,
-                    worker_id,
-                    user.id,
-                ),
+                (worker_id, worker_name, order_id),
             )
-
-            worker = cur.fetchone()
-
+            order = cur.fetchone()
         conn.commit()
 
-    if not worker:
+    try:
+        await query.edit_message_reply_markup(reply_markup=None)
+    except Exception:
+        pass
 
-        await query.answer(
-            "❌ Профиль топилмади.",
-            show_alert=True,
-        )
-
+    if not order:
+        await query.message.reply_text("⚠️ Бу буюртма аллақачон бошқа уста томонидан қабул қилинган.")
         return
 
-    if worker[5]:
-
-        status_text = "🟢 Фаол"
-
-        button_text = "🔴 Нофаол қилиш"
-
-        callback_data = (
-            f"profile_deactivate:{worker_id}"
-        )
-
-        status_message = (
-            "🟢 Профилингиз ФАОЛ қилинди.\n\n"
-            "Энди янги буюртмалар келиши мумкин."
-        )
-
-    else:
-
-        status_text = "🔴 Нофаол"
-
-        button_text = "🟢 Фаол қилиш"
-
-        callback_data = (
-            f"profile_activate:{worker_id}"
-        )
-
-        status_message = (
-            "🔴 Профилингиз НОФАОЛ қилинди.\n\n"
-            "Энди янги буюртмалар келмайди."
-        )
-
-    keyboard = [
-        [
-            InlineKeyboardButton(
-                button_text,
-                callback_data=callback_data,
-            )
-        ]
-    ]
-
-    await query.edit_message_text(
-        "👤 МЕНИНГ ПРОФИЛИМ\n\n"
-        f"👤 Исм: {worker[0]}\n"
-        f"📞 Телефон: {worker[1]}\n"
-        f"🔧 Хизмат: {worker[2]}\n"
-        f"📍 Ҳудуд: {worker[3]}\n"
-        f"💰 Нархи: {worker[4]}\n"
-        f"📊 Ҳолат: {status_text}\n"
-        f"🕒 Рўйхатдан ўтган: {worker[6]}\n\n"
-        f"{status_message}",
-        reply_markup=InlineKeyboardMarkup(keyboard),
+    customer_id, customer_name, service, address, problem = order
+    await query.message.reply_text(
+        f"✅ Буюртма #{order_id} сиз томонингиздан қабул қилинди.\n"
+        f"👤 Мижоз: {customer_name}\n📞 {worker_phone}\n📍 {address}"
     )
 
-
-# =========================================================
-# CONTACT
-# =========================================================
-
-async def contact(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE,
-):
-
-    await update.message.reply_text(
-        "📞 Алоқа\n\n"
-        "Osh Service\n"
-        "Хизматлар ва уста топиш платформаси.\n\n"
-        "Савол ёки таклиф бўлса, администраторга мурожаат қилинг.",
-        reply_markup=main_menu(),
-    )
-
-
-# =========================================================
-# ADMIN CHECK
-# =========================================================
-
-def is_admin(update: Update):
-
-    if not update.effective_user:
-        return False
-
-    return (
-        ADMIN_ID != 0
-        and update.effective_user.id == ADMIN_ID
-    )
-
-
-# =========================================================
-# ADMIN MENU
-# =========================================================
-
-def admin_menu():
-
-    keyboard = [
-        [
-            InlineKeyboardButton(
-                "👨‍🔧 Усталар",
-                callback_data="admin_workers",
-            ),
-            InlineKeyboardButton(
-                "📢 Эълонлар",
-                callback_data="admin_announcements",
-            ),
-        ],
-        [
-            InlineKeyboardButton(
-                "🔔 Буюртмалар",
-                callback_data="admin_orders",
-            ),
-            InlineKeyboardButton(
-                "📊 Статистика",
-                callback_data="admin_stats",
-            ),
-        ],
-    ]
-
-    return InlineKeyboardMarkup(keyboard)
-
-
-# =========================================================
-# ADMIN COMMAND
-# =========================================================
-
-async def admin(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE,
-):
-
-    if not is_admin(update):
-
-        await update.message.reply_text(
-            "❌ Сизда админ ҳуқуқи йўқ."
+    try:
+        await context.bot.send_message(
+            customer_id,
+            "✅ БУЮРТМАНГИЗНИ УСТА ҚАБУЛ ҚИЛДИ!\n\n"
+            f"👨‍🔧 Уста: {worker_name}\n"
+            f"📞 Устанинг рақами: {worker_phone}\n\n"
+            f"🔧 Хизмат: {service}\n"
+            f"📍 Манзил: {address}",
         )
-
-        return
-
-    await update.message.reply_text(
-        "🔐 АДМИН ПАНЕЛЬ",
-        reply_markup=admin_menu(),
-    )
+    except Exception as exc:
+        logger.warning("Customer notification failed: %s", exc)
 
 
-# =========================================================
-# ADMIN WORKERS
-# =========================================================
-
-async def workers_command(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE,
-):
-
-    if not is_admin(update):
-
-        await update.message.reply_text(
-            "❌ Сизда админ ҳуқуқи йўқ."
-        )
-
-        return
-
+async def my_profile(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
     with get_connection() as conn:
-
         with conn.cursor() as cur:
-
             cur.execute(
                 """
-                SELECT
-                    id,
-                    name,
-                    phone,
-                    service,
-                    area,
-                    price,
-                    is_active,
-                    created_at
+                SELECT id,name,phone,service,area,price,created_at,COALESCE(is_active,TRUE)
                 FROM workers
+                WHERE telegram_id=%s
                 ORDER BY id DESC
-                """
+                LIMIT 1
+                """,
+                (user.id,),
             )
+            worker = cur.fetchone()
 
-            rows = cur.fetchall()
-
-    if not rows:
-
-        await update.message.reply_text(
-            "👨‍🔧 Ҳозирча усталар йўқ."
-        )
-
+    if not worker:
+        await update.message.reply_text("❗ Сиз ҳали уста сифатида рўйхатдан ўтмагансиз.", reply_markup=main_keyboard())
         return
 
-    text = "👨‍🔧 УСТАЛАР:\n\n"
-
-    for row in rows:
-
-        status_text = (
-            "🟢 Фаол"
-            if row[6]
-            else "🔴 Нофаол"
-        )
-
-        text += (
-            f"#{row[0]} {row[1]}\n"
-            f"🔧 Хизмат: {row[3]}\n"
-            f"📍 Ҳудуд: {row[4]}\n"
-            f"💰 Нархи: {row[5]}\n"
-            f"📞 Телефон: {row[2]}\n"
-            f"📊 Ҳолат: {status_text}\n"
-            f"🕒 {row[7]}\n\n"
-        )
-
-    await update.message.reply_text(text)
-
-
-# =========================================================
-# ADMIN ORDERS
-# =========================================================
-
-async def orders_command(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE,
-):
-
-    if not is_admin(update):
-
-        await update.message.reply_text(
-            "❌ Сизда админ ҳуқуқи йўқ."
-        )
-
-        return
-
-    with get_connection() as conn:
-
-        with conn.cursor() as cur:
-
-            cur.execute(
-                """
-                SELECT
-                    id,
-                    name,
-                    phone,
-                    service,
-                    address,
-                    problem,
-                    status,
-                    accepted_worker_name,
-                    created_at
-                FROM orders
-                ORDER BY id DESC
-                """
-            )
-
-            rows = cur.fetchall()
-
-    if not rows:
-
-        await update.message.reply_text(
-            "🔔 Ҳозирча буюртмалар йўқ."
-        )
-
-        return
-
-    text = "🔔 БУЮРТМАЛАР:\n\n"
-
-    for row in rows:
-
-        status_text = (
-            "🟢 Янги"
-            if row[6] == "new"
-            else "✅ Қабул қилинган"
-        )
-
-        text += (
-            f"#{row[0]}\n"
-            f"👤 Исм: {row[1]}\n"
-            f"📞 Телефон: {row[2]}\n"
-            f"🔧 Хизмат: {row[3]}\n"
-            f"📍 Манзил: {row[4]}\n"
-            f"📝 Муаммо: {row[5]}\n"
-            f"📊 Ҳолат: {status_text}\n"
-        )
-
-        if row[7]:
-            text += (
-                f"👨‍🔧 Уста: {row[7]}\n"
-            )
-
-        text += (
-            f"🕒 {row[8]}\n\n"
-        )
-
-    await update.message.reply_text(text)
-
-
-# =========================================================
-# ADMIN ANNOUNCEMENTS
-# =========================================================
-
-async def announcements_command(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE,
-):
-
-    if not is_admin(update):
-
-        await update.message.reply_text(
-            "❌ Сизда админ ҳуқуқи йўқ."
-        )
-
-        return
-
-    with get_connection() as conn:
-
-        with conn.cursor() as cur:
-
-            cur.execute(
-                """
-                SELECT
-                    id,
-                    name,
-                    phone,
-                    service,
-                    address,
-                    budget,
-                    details,
-                    created_at
-                FROM announcements
-                ORDER BY id DESC
-                """
-            )
-
-            rows = cur.fetchall()
-
-    if not rows:
-
-        await update.message.reply_text(
-            "📢 Ҳозирча эълонлар йўқ."
-        )
-
-        return
-
-    text = "📢 ЭЪЛОНЛАР:\n\n"
-
-    for row in rows:
-
-        text += (
-            f"#{row[0]}\n"
-            f"👤 Исм: {row[1]}\n"
-            f"📞 Телефон: {row[2]}\n"
-            f"🔧 Хизмат: {row[3]}\n"
-            f"📍 Манзил: {row[4]}\n"
-            f"💰 Бюджет: {row[5]}\n"
-            f"📝 {row[6]}\n"
-            f"🕒 {row[7]}\n\n"
-        )
-
-    await update.message.reply_text(text)
-
-
-# =========================================================
-# ADMIN STATS
-# =========================================================
-
-async def stats_command(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE,
-):
-
-    if not is_admin(update):
-
-        await update.message.reply_text(
-            "❌ Сизда админ ҳуқуқи йўқ."
-        )
-
-        return
-
-    with get_connection() as conn:
-
-        with conn.cursor() as cur:
-
-            cur.execute(
-                "SELECT COUNT(*) FROM workers"
-            )
-
-            workers_count = cur.fetchone()[0]
-
-            cur.execute(
-                "SELECT COUNT(*) FROM orders"
-            )
-
-            orders_count = cur.fetchone()[0]
-
-            cur.execute(
-                "SELECT COUNT(*) FROM announcements"
-            )
-
-            announcements_count = cur.fetchone()[0]
-
-    total = (
-        workers_count
-        + orders_count
-        + announcements_count
+    worker_id, name, phone, service, area, price, created_at, is_active = worker
+    status = "🟢 Фаол" if is_active else "🔴 Нофаол"
+    toggle_text = "🔴 Нофаол қилиш" if is_active else "🟢 Фаол қилиш"
+    keyboard = InlineKeyboardMarkup([
+        [InlineKeyboardButton("✏️ Профилни таҳрирлаш", callback_data="edit_profile")],
+        [InlineKeyboardButton(toggle_text, callback_data=f"toggle_worker:{worker_id}")],
+        [InlineKeyboardButton("⬅️ Бош меню", callback_data="profile_main_menu")],
+    ])
+    text = (
+        "👤 МЕНИНГ ПРОФИЛИМ\n\n"
+        f"👤 Исм: {name}\n📞 Телефон: {phone}\n🔧 Хизмат: {service}\n"
+        f"📍 Ҳудуд: {area}\n💰 Нархи: {price}\n📌 Ҳолат: {status}\n"
+        f"🕐 Рўйхатдан ўтган: {created_at}\n"
     )
+    if update.callback_query:
+        await update.callback_query.edit_message_text(text, reply_markup=keyboard)
+    else:
+        await update.message.reply_text(text, reply_markup=keyboard)
 
+
+async def start_edit_profile(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    user = update.effective_user
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT name,phone,service,area,price FROM workers WHERE telegram_id=%s ORDER BY id DESC LIMIT 1",
+                (user.id,),
+            )
+            worker = cur.fetchone()
+    if not worker:
+        await query.message.reply_text("❗ Профил топилмади.")
+        return ConversationHandler.END
+    context.user_data["edit_worker"] = {}
+    await query.message.reply_text(f"✏️ Профилни таҳрирлаш\n\nҲозирги исм: {worker[0]}\n\nЯнги исмни ёзинг:")
+    return EDIT_WORKER_NAME
+
+
+async def edit_worker_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    text = update.message.text.strip()
+    if not text:
+        await update.message.reply_text("❗ Исмни бўш қолдирманг.")
+        return EDIT_WORKER_NAME
+    context.user_data["edit_worker"]["name"] = text
+    await update.message.reply_text("📞 Янги телефон рақамингизни ёзинг:")
+    return EDIT_WORKER_PHONE
+
+
+async def edit_worker_phone(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    phone = update.message.text.strip()
+    if len(re.sub(r"\D", "", phone)) < 7:
+        await update.message.reply_text("❗ Телефон рақами нотўғри. Қайта ёзинг:")
+        return EDIT_WORKER_PHONE
+    context.user_data["edit_worker"]["phone"] = phone
+    await update.message.reply_text("🔧 Янги хизматингизни ёзинг:")
+    return EDIT_WORKER_SERVICE
+
+
+async def edit_worker_service(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    service = update.message.text.strip()
+    if not service:
+        await update.message.reply_text("❗ Хизматни бўш қолдирманг.")
+        return EDIT_WORKER_SERVICE
+    context.user_data["edit_worker"]["service"] = service
+    await update.message.reply_text("📍 Янги ҳудудингизни ёзинг:")
+    return EDIT_WORKER_AREA
+
+
+async def edit_worker_area(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    area = update.message.text.strip()
+    if not area:
+        await update.message.reply_text("❗ Ҳудудни бўш қолдирманг.")
+        return EDIT_WORKER_AREA
+    context.user_data["edit_worker"]["area"] = area
+    await update.message.reply_text("💰 Янги хизмат нархингизни ёзинг:")
+    return EDIT_WORKER_PRICE
+
+
+async def edit_worker_price(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    price = update.message.text.strip()
+    if not price:
+        await update.message.reply_text("❗ Нарҳни бўш қолдирманг.")
+        return EDIT_WORKER_PRICE
+    data = context.user_data["edit_worker"]
+    data["price"] = price
+    user = update.effective_user
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                UPDATE workers SET name=%s,phone=%s,service=%s,area=%s,price=%s
+                WHERE id=(SELECT id FROM workers WHERE telegram_id=%s ORDER BY id DESC LIMIT 1)
+                """,
+                (data["name"],data["phone"],data["service"],data["area"],data["price"],user.id),
+            )
+        conn.commit()
+    context.user_data.clear()
+    await update.message.reply_text(
+        "✅ Профилингиз муваффақиятли янгиланди!\n\n"
+        f"👤 Исм: {data['name']}\n📞 Телефон: {data['phone']}\n🔧 Хизмат: {data['service']}\n"
+        f"📍 Ҳудуд: {data['area']}\n💰 Нархи: {data['price']}",
+        reply_markup=main_keyboard(),
+    )
+    return ConversationHandler.END
+
+
+async def toggle_worker_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    user = update.effective_user
+    try:
+        worker_id = int(query.data.split(":")[1])
+    except Exception:
+        return
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                UPDATE workers SET is_active=NOT COALESCE(is_active,TRUE)
+                WHERE id=%s AND telegram_id=%s
+                RETURNING is_active
+                """,
+                (worker_id,user.id),
+            )
+            result = cur.fetchone()
+        conn.commit()
+    if not result:
+        await query.message.reply_text("❗ Профил топилмади.")
+        return
+    await my_profile(update, context)
+
+
+async def profile_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    await query.message.reply_text("Osh Service ботга хуш келибсиз!\n\nКеракли хизматни танланг:", reply_markup=main_keyboard())
+
+
+async def announcement_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    context.user_data.clear()
+    await update.message.reply_text("📢 Эълон бериш\n\n👤 Исмингизни ёзинг:")
+    return ANN_NAME
+
+
+async def ann_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    context.user_data["ann_name"] = update.message.text.strip()
+    await update.message.reply_text("📞 Телефон рақамингизни ёзинг:")
+    return ANN_PHONE
+
+
+async def ann_phone(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    phone = update.message.text.strip()
+    if len(re.sub(r"\D", "", phone)) < 7:
+        await update.message.reply_text("❗ Телефон рақами нотўғри. Қайта ёзинг:")
+        return ANN_PHONE
+    context.user_data["ann_phone"] = phone
+    await update.message.reply_text("🔧 Қайси хизмат/иш бўйича эълон?\nМасалан: Электрик", reply_markup=worker_services_keyboard())
+    return ANN_SERVICE
+
+
+async def ann_service(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    context.user_data["ann_service"] = update.message.text.strip()
+    await update.message.reply_text("📍 Манзилни ёзинг:")
+    return ANN_ADDRESS
+
+
+async def ann_address(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    context.user_data["ann_address"] = update.message.text.strip()
+    await update.message.reply_text("💰 Бюджет/нархни ёзинг:")
+    return ANN_BUDGET
+
+
+async def ann_budget(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    context.user_data["ann_budget"] = update.message.text.strip()
+    await update.message.reply_text("📝 Эълон тафсилотини ёзинг:")
+    return ANN_DETAILS
+
+
+async def ann_details(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    context.user_data["ann_details"] = update.message.text.strip()
+    data = context.user_data
+    user = update.effective_user
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO announcements (telegram_id,name,phone,service,address,budget,details)
+                VALUES (%s,%s,%s,%s,%s,%s,%s) RETURNING id
+                """,
+                (user.id,data["ann_name"],data["ann_phone"],data["ann_service"],data["ann_address"],data["ann_budget"],data["ann_details"]),
+            )
+            ann_id = cur.fetchone()[0]
+        conn.commit()
+    if ADMIN_ID:
+        try:
+            await context.bot.send_message(
+                ADMIN_ID,
+                f"📢 ЯНГИ ЭЪЛОН #{ann_id}\n\n"
+                f"👤 {data['ann_name']}\n📞 {data['ann_phone']}\n🔧 {data['ann_service']}\n"
+                f"📍 {data['ann_address']}\n💰 {data['ann_budget']}\n📝 {data['ann_details']}",
+            )
+        except Exception as exc:
+            logger.warning("Admin announcement notification failed: %s", exc)
+    await update.message.reply_text(f"✅ Эълонингиз қабул қилинди!\nЭълон рақами: #{ann_id}", reply_markup=main_keyboard())
+    context.user_data.clear()
+    return ConversationHandler.END
+
+
+async def contact(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if ADMIN_ID:
+        text = f"📞 Алоқа\n\nАдминистратор билан боғланиш учун шу ботда хабар қолдиринг.\nАдмин ID: {ADMIN_ID}"
+    else:
+        text = "📞 Алоқа\n\nАдминистратор билан боғланиш учун хабар қолдиринг."
+    await update.message.reply_text(text)
+
+
+async def admin_only(update: Update):
+    return ADMIN_ID and update.effective_user and update.effective_user.id == ADMIN_ID
+
+
+async def admin_workers(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await admin_only(update):
+        return
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT id,telegram_id,name,phone,service,area,price,COALESCE(is_active,TRUE),created_at FROM workers ORDER BY id DESC")
+            rows = cur.fetchall()
+    if not rows:
+        await update.message.reply_text("Усталар йўқ.")
+        return
+    lines = ["👨‍🔧 УСТАЛАР\n"]
+    for row in rows:
+        wid, tid, name, phone, service, area, price, active, created = row
+        status = "🟢" if active else "🔴"
+        lines.append(f"#{wid} {status} {name} — {service} — {area} — {price}\n📞 {phone}\n🆔 {tid}")
+    await update.message.reply_text("\n\n".join(lines)[:4000])
+
+
+async def admin_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await admin_only(update):
+        return
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT COUNT(*) FROM workers")
+            workers_count = cur.fetchone()[0]
+            cur.execute("SELECT COUNT(*) FROM workers WHERE COALESCE(is_active,TRUE)=TRUE")
+            active_count = cur.fetchone()[0]
+            cur.execute("SELECT COUNT(*) FROM orders")
+            orders_count = cur.fetchone()[0]
+            cur.execute("SELECT COUNT(*) FROM orders WHERE status='new'")
+            new_orders = cur.fetchone()[0]
+            cur.execute("SELECT COUNT(*) FROM orders WHERE status='accepted'")
+            accepted = cur.fetchone()[0]
+            cur.execute("SELECT COUNT(*) FROM announcements")
+            announcements_count = cur.fetchone()[0]
     await update.message.reply_text(
         "📊 СТАТИСТИКА\n\n"
         f"👨‍🔧 Усталар: {workers_count}\n"
-        f"🔔 Буюртмалар: {orders_count}\n"
-        f"📢 Эълонлар: {announcements_count}\n"
-        f"📈 Жами: {total}"
+        f"🟢 Фаол усталар: {active_count}\n"
+        f"📦 Буюртмалар: {orders_count}\n"
+        f"🆕 Янги буюртмалар: {new_orders}\n"
+        f"✅ Қабул қилинган: {accepted}\n"
+        f"📢 Эълонлар: {announcements_count}"
     )
 
 
-# =========================================================
-# ADMIN CALLBACKS
-# =========================================================
-
-async def admin_callback(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE,
-):
-
-    query = update.callback_query
-
-    await query.answer()
-
-    if not is_admin(update):
-
-        await query.message.reply_text(
-            "❌ Сизда админ ҳуқуқи йўқ."
-        )
-
+async def admin_orders(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await admin_only(update):
         return
-
-    if query.data == "admin_workers":
-
-        with get_connection() as conn:
-
-            with conn.cursor() as cur:
-
-                cur.execute(
-                    """
-                    SELECT
-                        id,
-                        name,
-                        phone,
-                        service,
-                        area,
-                        price,
-                        is_active,
-                        created_at
-                    FROM workers
-                    ORDER BY id DESC
-                    """
-                )
-
-                rows = cur.fetchall()
-
-        if not rows:
-
-            await query.message.reply_text(
-                "👨‍🔧 Ҳозирча усталар йўқ."
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT id,name,phone,service,address,problem,status,accepted_worker_name,created_at FROM orders ORDER BY id DESC LIMIT 30"
             )
+            rows = cur.fetchall()
+    if not rows:
+        await update.message.reply_text("Буюртмалар йўқ.")
+        return
+    lines = ["📦 СЎНГГИ БУЮРТМАЛАР\n"]
+    for row in rows:
+        oid,name,phone,service,address,problem,status,accepted,created = row
+        lines.append(f"#{oid} | {status}\n{service} | {name}\n📞 {phone}\n📍 {address}\n📝 {problem}\n👨‍🔧 {accepted or '-'}")
+    await update.message.reply_text("\n\n".join(lines)[:4000])
 
-            return
-
-        text = "👨‍🔧 УСТАЛАР:\n\n"
-
-        for row in rows:
-
-            status_text = (
-                "🟢 Фаол"
-                if row[6]
-                else "🔴 Нофаол"
-            )
-
-            text += (
-                f"#{row[0]} {row[1]}\n"
-                f"🔧 Хизмат: {row[3]}\n"
-                f"📍 Ҳудуд: {row[4]}\n"
-                f"💰 Нархи: {row[5]}\n"
-                f"📞 Телефон: {row[2]}\n"
-                f"📊 Ҳолат: {status_text}\n"
-                f"🕒 {row[7]}\n\n"
-            )
-
-        await query.message.reply_text(text)
-
-    elif query.data == "admin_orders":
-
-        with get_connection() as conn:
-
-            with conn.cursor() as cur:
-
-                cur.execute(
-                    """
-                    SELECT
-                        id,
-                        name,
-                        phone,
-                        service,
-                        address,
-                        problem,
-                        status,
-                        accepted_worker_name,
-                        created_at
-                    FROM orders
-                    ORDER BY id DESC
-                    """
-                )
-
-                rows = cur.fetchall()
-
-        if not rows:
-
-            await query.message.reply_text(
-                "🔔 Ҳозирча буюртмалар йўқ."
-            )
-
-            return
-
-        text = "🔔 БУЮРТМАЛАР:\n\n"
-
-        for row in rows:
-
-            status_text = (
-                "🟢 Янги"
-                if row[6] == "new"
-                else "✅ Қабул қилинган"
-            )
-
-            text += (
-                f"#{row[0]}\n"
-                f"👤 Исм: {row[1]}\n"
-                f"📞 Телефон: {row[2]}\n"
-                f"🔧 Хизмат: {row[3]}\n"
-                f"📍 Манзил: {row[4]}\n"
-                f"📝 Муаммо: {row[5]}\n"
-                f"📊 Ҳолат: {status_text}\n"
-            )
-
-            if row[7]:
-                text += (
-                    f"👨‍🔧 Уста: {row[7]}\n"
-                )
-
-            text += (
-                f"🕒 {row[8]}\n\n"
-            )
-
-        await query.message.reply_text(text)
-
-    elif query.data == "admin_announcements":
-
-        with get_connection() as conn:
-
-            with conn.cursor() as cur:
-
-                cur.execute(
-                    """
-                    SELECT
-                        id,
-                        name,
-                        phone,
-                        service,
-                        address,
-                        budget,
-                        details,
-                        created_at
-                    FROM announcements
-                    ORDER BY id DESC
-                    """
-                )
-
-                rows = cur.fetchall()
-
-        if not rows:
-
-            await query.message.reply_text(
-                "📢 Ҳозирча эълонлар йўқ."
-            )
-
-            return
-
-        text = "📢 ЭЪЛОНЛАР:\n\n"
-
-        for row in rows:
-
-            text += (
-                f"#{row[0]}\n"
-                f"👤 Исм: {row[1]}\n"
-                f"📞 Телефон: {row[2]}\n"
-                f"🔧 Хизмат: {row[3]}\n"
-                f"📍 Манзил: {row[4]}\n"
-                f"💰 Бюджет: {row[5]}\n"
-                f"📝 {row[6]}\n"
-                f"🕒 {row[7]}\n\n"
-            )
-
-        await query.message.reply_text(text)
-
-    elif query.data == "admin_stats":
-
-        with get_connection() as conn:
-
-            with conn.cursor() as cur:
-
-                cur.execute(
-                    "SELECT COUNT(*) FROM workers"
-                )
-
-                workers_count = cur.fetchone()[0]
-
-                cur.execute(
-                    "SELECT COUNT(*) FROM orders"
-                )
-
-                orders_count = cur.fetchone()[0]
-
-                cur.execute(
-                    "SELECT COUNT(*) FROM announcements"
-                )
-
-                announcements_count = cur.fetchone()[0]
-
-        total = (
-            workers_count
-            + orders_count
-            + announcements_count
-        )
-
-        await query.message.reply_text(
-            "📊 СТАТИСТИКА\n\n"
-            f"👨‍🔧 Усталар: {workers_count}\n"
-            f"🔔 Буюртмалар: {orders_count}\n"
-            f"📢 Эълонлар: {announcements_count}\n"
-            f"📈 Жами: {total}"
-        )
-
-
-# =========================================================
-# UNKNOWN TEXT
-# =========================================================
-
-async def unknown_text(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE,
-):
-
-    await update.message.reply_text(
-        "❗ Илтимос, менюдаги керакли тугмани танланг.",
-        reply_markup=main_menu(),
-    )
-
-
-# =========================================================
-# APPLICATION
-# =========================================================
 
 def build_application():
+    application = Application.builder().token(TOKEN).build()
 
-    application = (
-        Application.builder()
-        .token(TOKEN)
-        .build()
-    )
-
-    # =====================================================
-    # CUSTOMER CONVERSATION
-    # =====================================================
-
-    customer_conversation = ConversationHandler(
-        entry_points=[
-            MessageHandler(
-                filters.Regex(
-                    r"^(🔧 Сантехник|⚡ Электрик|📱 Телефон таъмири|💻 Компьютер таъмири|🧹 Уй тозалаш|🪑 Мебель таъмири)$"
-                ),
-                customer_start,
-            )
-        ],
+    worker_conv = ConversationHandler(
+        entry_points=[MessageHandler(filters.Regex(r"^👨‍🔧 Уста бўлиб рўйхатдан ўтиш$"), worker_register_start)],
         states={
-            NAME: [
-                MessageHandler(
-                    filters.TEXT
-                    & ~filters.COMMAND,
-                    customer_name,
-                )
-            ],
-            PHONE: [
-                MessageHandler(
-                    filters.TEXT
-                    & ~filters.COMMAND,
-                    customer_phone,
-                )
-            ],
-            ADDRESS: [
-                MessageHandler(
-                    filters.TEXT
-                    & ~filters.COMMAND,
-                    customer_address,
-                )
-            ],
-            PROBLEM: [
-                MessageHandler(
-                    filters.TEXT
-                    & ~filters.COMMAND,
-                    customer_problem,
-                )
-            ],
+            WORKER_NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, worker_name)],
+            WORKER_PHONE: [MessageHandler(filters.TEXT & ~filters.COMMAND, worker_phone)],
+            WORKER_SERVICE: [MessageHandler(filters.TEXT & ~filters.COMMAND, worker_service)],
+            WORKER_AREA: [MessageHandler(filters.TEXT & ~filters.COMMAND, worker_area)],
+            WORKER_PRICE: [MessageHandler(filters.TEXT & ~filters.COMMAND, worker_price)],
         },
-        fallbacks=[
-            CommandHandler(
-                "cancel",
-                cancel,
-            )
-        ],
+        fallbacks=[CommandHandler("start", start)],
     )
 
-    application.add_handler(
-        customer_conversation
-    )
-
-    # =====================================================
-    # WORKER CONVERSATION
-    # =====================================================
-
-    worker_conversation = ConversationHandler(
-        entry_points=[
-            MessageHandler(
-                filters.Regex(
-                    r"^👨‍🔧 Уста чақириш$"
-                ),
-                worker_start,
-            )
-        ],
+    order_conv = ConversationHandler(
+        entry_points=[MessageHandler(filters.Regex(r"^(🔧|⚡|📱|💻|🧹|🪑)"), order_from_service)],
         states={
-            WORKER_NAME: [
-                MessageHandler(
-                    filters.TEXT
-                    & ~filters.COMMAND,
-                    worker_name,
-                )
-            ],
-            WORKER_PHONE: [
-                MessageHandler(
-                    filters.TEXT
-                    & ~filters.COMMAND,
-                    worker_phone,
-                )
-            ],
-            WORKER_SERVICE: [
-                MessageHandler(
-                    filters.TEXT
-                    & ~filters.COMMAND,
-                    worker_service,
-                )
-            ],
-            WORKER_AREA: [
-                MessageHandler(
-                    filters.TEXT
-                    & ~filters.COMMAND,
-                    worker_area,
-                )
-            ],
-            WORKER_PRICE: [
-                MessageHandler(
-                    filters.TEXT
-                    & ~filters.COMMAND,
-                    worker_price,
-                )
-            ],
+            ORDER_NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, customer_name)],
+            ORDER_PHONE: [MessageHandler(filters.TEXT & ~filters.COMMAND, customer_phone)],
+            ORDER_ADDRESS: [MessageHandler(filters.TEXT & ~filters.COMMAND, customer_address)],
+            ORDER_PROBLEM: [MessageHandler(filters.TEXT & ~filters.COMMAND, customer_problem)],
         },
-        fallbacks=[
-            CommandHandler(
-                "cancel",
-                cancel,
-            )
-        ],
+        fallbacks=[CommandHandler("start", start)],
     )
 
-    application.add_handler(
-        worker_conversation
-    )
-
-    # =====================================================
-    # ANNOUNCEMENT CONVERSATION
-    # =====================================================
-
-    announcement_conversation = ConversationHandler(
-        entry_points=[
-            MessageHandler(
-                filters.Regex(
-                    r"^📢 Эълон бериш$"
-                ),
-                announcement_start,
-            )
-        ],
+    announcement_conv = ConversationHandler(
+        entry_points=[MessageHandler(filters.Regex(r"^📢 Эълон бериш$"), announcement_start)],
         states={
-            ANNOUNCEMENT_NAME: [
-                MessageHandler(
-                    filters.TEXT
-                    & ~filters.COMMAND,
-                    announcement_name,
-                )
-            ],
-            ANNOUNCEMENT_PHONE: [
-                MessageHandler(
-                    filters.TEXT
-                    & ~filters.COMMAND,
-                    announcement_phone,
-                )
-            ],
-            ANNOUNCEMENT_SERVICE: [
-                MessageHandler(
-                    filters.TEXT
-                    & ~filters.COMMAND,
-                    announcement_service,
-                )
-            ],
-            ANNOUNCEMENT_ADDRESS: [
-                MessageHandler(
-                    filters.TEXT
-                    & ~filters.COMMAND,
-                    announcement_address,
-                )
-            ],
-            ANNOUNCEMENT_BUDGET: [
-                MessageHandler(
-                    filters.TEXT
-                    & ~filters.COMMAND,
-                    announcement_budget,
-                )
-            ],
-            ANNOUNCEMENT_DETAILS: [
-                MessageHandler(
-                    filters.TEXT
-                    & ~filters.COMMAND,
-                    announcement_details,
-                )
-            ],
+            ANN_NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, ann_name)],
+            ANN_PHONE: [MessageHandler(filters.TEXT & ~filters.COMMAND, ann_phone)],
+            ANN_SERVICE: [MessageHandler(filters.TEXT & ~filters.COMMAND, ann_service)],
+            ANN_ADDRESS: [MessageHandler(filters.TEXT & ~filters.COMMAND, ann_address)],
+            ANN_BUDGET: [MessageHandler(filters.TEXT & ~filters.COMMAND, ann_budget)],
+            ANN_DETAILS: [MessageHandler(filters.TEXT & ~filters.COMMAND, ann_details)],
         },
-        fallbacks=[
-            CommandHandler(
-                "cancel",
-                cancel,
-            )
-        ],
+        fallbacks=[CommandHandler("start", start)],
     )
 
-    application.add_handler(
-        announcement_conversation
+    edit_conv = ConversationHandler(
+        entry_points=[CallbackQueryHandler(start_edit_profile, pattern=r"^edit_profile$")],
+        states={
+            EDIT_WORKER_NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, edit_worker_name)],
+            EDIT_WORKER_PHONE: [MessageHandler(filters.TEXT & ~filters.COMMAND, edit_worker_phone)],
+            EDIT_WORKER_SERVICE: [MessageHandler(filters.TEXT & ~filters.COMMAND, edit_worker_service)],
+            EDIT_WORKER_AREA: [MessageHandler(filters.TEXT & ~filters.COMMAND, edit_worker_area)],
+            EDIT_WORKER_PRICE: [MessageHandler(filters.TEXT & ~filters.COMMAND, edit_worker_price)],
+        },
+        fallbacks=[CommandHandler("start", start)],
     )
 
-    # =====================================================
-    # COMMANDS
-    # =====================================================
+    application.add_handler(worker_conv)
+    application.add_handler(order_conv)
+    application.add_handler(announcement_conv)
+    application.add_handler(edit_conv)
 
-    application.add_handler(
-        CommandHandler(
-            "start",
-            start,
-        )
-    )
+    application.add_handler(CallbackQueryHandler(accept_order_callback, pattern=r"^accept_order:"))
+    application.add_handler(CallbackQueryHandler(toggle_worker_callback, pattern=r"^toggle_worker:"))
+    application.add_handler(CallbackQueryHandler(profile_main_menu, pattern=r"^profile_main_menu$"))
 
-    application.add_handler(
-        CommandHandler(
-            "help",
-            help_command,
-        )
-    )
+    application.add_handler(CommandHandler("start", start))
+    application.add_handler(CommandHandler("help", help_command))
+    application.add_handler(CommandHandler("workers", admin_workers))
+    application.add_handler(CommandHandler("stats", admin_stats))
+    application.add_handler(CommandHandler("orders", admin_orders))
 
-    application.add_handler(
-        CommandHandler(
-            "cancel",
-            cancel,
-        )
-    )
-
-    application.add_handler(
-        CommandHandler(
-            "admin",
-            admin,
-        )
-    )
-
-    application.add_handler(
-        CommandHandler(
-            "workers",
-            workers_command,
-        )
-    )
-
-    application.add_handler(
-        CommandHandler(
-            "orders",
-            orders_command,
-        )
-    )
-
-    application.add_handler(
-        CommandHandler(
-            "announcements",
-            announcements_command,
-        )
-    )
-
-    application.add_handler(
-        CommandHandler(
-            "stats",
-            stats_command,
-        )
-    )
-
-    # =====================================================
-    # MENU BUTTONS
-    # =====================================================
-
-    application.add_handler(
-        MessageHandler(
-            filters.Regex(
-                r"^🔧 Хизматлар$"
-            ),
-            services,
-        )
-    )
-
-    application.add_handler(
-        MessageHandler(
-            filters.Regex(
-                r"^Алоқа$"
-            ),
-            contact,
-        )
-    )
-
-    application.add_handler(
-        MessageHandler(
-            filters.Regex(
-                r"^👤 Менинг профилим$"
-            ),
-            my_profile,
-        )
-    )
-
-    # =====================================================
-    # ACCEPT ORDER CALLBACK
-    # =====================================================
-
-    application.add_handler(
-        CallbackQueryHandler(
-            accept_order_callback,
-            pattern=r"^accept_order:\d+$",
-        )
-    )
-
-    # =====================================================
-    # PROFILE STATUS CALLBACK
-    # =====================================================
-
-    application.add_handler(
-        CallbackQueryHandler(
-            profile_status_callback,
-            pattern=r"^profile_(activate|deactivate):\d+$",
-        )
-    )
-
-    # =====================================================
-    # ADMIN CALLBACK
-    # =====================================================
-
-    application.add_handler(
-        CallbackQueryHandler(
-            admin_callback,
-            pattern=r"^admin_",
-        )
-    )
-
-    # =====================================================
-    # UNKNOWN TEXT
-    # =====================================================
-
-    application.add_handler(
-        MessageHandler(
-            filters.TEXT & ~filters.COMMAND,
-            unknown_text,
-        )
-    )
+    application.add_handler(MessageHandler(filters.Regex(r"^🔧 Хизматлар$"), show_services))
+    application.add_handler(MessageHandler(filters.Regex(r"^👨‍🔧 Уста чақириш$"), worker_menu))
+    application.add_handler(MessageHandler(filters.Regex(r"^👤 Менинг профилим$"), my_profile))
+    application.add_handler(MessageHandler(filters.Regex(r"^Алоқа$"), contact))
+    application.add_handler(MessageHandler(filters.Regex(r"^⬅️ Бош меню$"), start))
 
     return application
 
 
-# =========================================================
-# MAIN
-# =========================================================
 
 def main():
-
-    if not TOKEN:
-
-        raise RuntimeError(
-            "TELEGRAM_BOT_TOKEN topilmadi"
-        )
-
-    if not DATABASE_URL:
-
-        raise RuntimeError(
-            "DATABASE_URL topilmadi"
-        )
-
-    logger.info(
-        "Initializing database..."
-    )
-
     init_database()
-
-    logger.info(
-        "Database initialized."
-    )
-
     application = build_application()
-
-    # =====================================================
-    # RENDER WEBHOOK
-    # =====================================================
-
     if RENDER_EXTERNAL_URL:
-
-        webhook_url = (
-            f"{RENDER_EXTERNAL_URL}/telegram"
-        )
-
-        logger.info(
-            f"Starting webhook: {webhook_url}"
-        )
-
+        webhook_url = f"{RENDER_EXTERNAL_URL}/telegram-webhook"
+        logger.info("Starting webhook: %s", webhook_url)
         application.run_webhook(
             listen="0.0.0.0",
             port=PORT,
-            url_path="telegram",
+            url_path="telegram-webhook",
             webhook_url=webhook_url,
-            drop_pending_updates=True,
         )
-
-    # =====================================================
-    # LOCAL / POLLING
-    # =====================================================
-
     else:
+        logger.info("Starting polling")
+        application.run_polling(drop_pending_updates=True)
 
-        logger.info(
-            "Starting polling..."
-        )
-
-        application.run_polling(
-            drop_pending_updates=True
-        )
-
-
-# =========================================================
-# START
-# =========================================================
 
 if __name__ == "__main__":
     main()

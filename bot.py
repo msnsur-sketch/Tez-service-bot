@@ -154,6 +154,17 @@ def currency(code):
     return 'сом' if code == 'KG' else 'сўм' if code == 'UZ' else ''
 
 
+def detect_city_from_text(text):
+    s = normalize_text(text)
+    if not s:
+        return ''
+    compact = s.replace(' ', '')
+    for city in CITY_COUNTRY:
+        if city in compact:
+            return city
+    return ''
+
+
 def display_city(city):
     names = {
         'osh':'Ош','bishkek':'Бишкек','jalalabad':'Жалал-Абад','karakol':'Каракол','tokmok':'Токмок',
@@ -696,7 +707,18 @@ async def order_phone(update, context):
 
 
 async def order_address(update, context):
-    context.user_data['order']['address'] = update.message.text.strip()
+    address = update.message.text.strip()
+    context.user_data['order']['address'] = address
+
+    # Буюртма адресида аниқ шаҳар кўрсатилса, шу шаҳар устувор бўлади.
+    detected_city = detect_city_from_text(address)
+    if detected_city:
+        code = country_from_city(detected_city)
+        context.user_data['order']['city'] = display_city(detected_city)
+        context.user_data['order']['country_code'] = code
+        context.user_data['order']['country_name'] = country_name(code)
+        context.user_data['order']['currency'] = currency(code)
+
     await update.message.reply_text('📝 Муаммони ёзинг:')
     return ORDER_PROBLEM
 
@@ -706,10 +728,21 @@ async def order_problem(update, context):
     o = context.user_data['order']
     o['problem'] = update.message.text.strip()
     o['telegram_id'] = tg
-    loc = get_location(tg)
-    if not loc:
+    profile_loc = get_location(tg)
+    if not profile_loc:
         await update.message.reply_text('❗ Аввало давлат ва шаҳарни танланг.')
         return ConversationHandler.END
+
+    # Агар адресда шаҳар аниқланган бўлса, буюртма шу шаҳарга юборилади.
+    # Акс ҳолда мижоз профилидаги давлат/шаҳар ишлатилади.
+    loc = dict(profile_loc)
+    if o.get('city'):
+        loc.update({
+            'city': o['city'],
+            'country_code': o.get('country_code') or profile_loc['country_code'],
+            'country_name': o.get('country_name') or profile_loc['country_name'],
+            'currency': o.get('currency') or currency(o.get('country_code')) or profile_loc['currency'],
+        })
     conn = get_connection()
     try:
         with conn.cursor() as cur:

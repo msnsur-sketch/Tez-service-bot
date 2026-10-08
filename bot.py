@@ -58,6 +58,11 @@ SERVICES = [
 ]
 SERVICE_PATTERN = r'^(?:' + '|'.join(re.escape(x) for x in SERVICES) + r')$'
 
+EDIT_INPUT_FILTER = (
+    filters.TEXT & ~filters.COMMAND &
+    ~filters.Regex(r'^(?:👤 Менинг профилим|👨‍🔧 Уста чақириш|👨‍🔧 Уста бўлиб рўйхатдан ўтиш|📢 Эълон бериш|🔧 Хизматлар|Алоқа|🌍 Давлат/шаҳар|⬅️ Бош меню)$')
+)
+
 WORKER_COUNTRY, WORKER_CITY, WORKER_NAME, WORKER_PHONE, WORKER_SERVICE, WORKER_AREA, WORKER_PRICE = range(7)
 ORDER_SERVICE, ORDER_NAME, ORDER_PHONE, ORDER_ADDRESS, ORDER_PROBLEM = range(10, 15)
 ANN_COUNTRY, ANN_CITY, ANN_NAME, ANN_PHONE, ANN_SERVICE, ANN_ADDRESS, ANN_BUDGET, ANN_DETAILS = range(20, 28)
@@ -636,7 +641,10 @@ async def profile(update, context):
     wid,name,phone,service,area,price,cc,cn,city,curr,created,active,free_used,sub_until,pending = w
     sub = get_worker_subscription(tg)
     sub_line = subscription_text(sub)
-    buttons = [[InlineKeyboardButton('🔄 Фаол/нофаол', callback_data='toggle')]]
+    buttons = [
+        [InlineKeyboardButton('✏️ Профилни таҳрирлаш', callback_data='worker_edit')],
+        [InlineKeyboardButton('🔄 Фаол/нофаол', callback_data='toggle')]
+    ]
     if not sub or not sub['subscribed']:
         buttons.append([InlineKeyboardButton('💳 PRO — 100 сом/ой', callback_data='payment:info')])
     await update.message.reply_text(
@@ -710,6 +718,9 @@ async def worker_edit_city(update, context):
         context.user_data.pop('worker_edit', None)
         await update.message.reply_text('🏠 Бош меню', reply_markup=main_keyboard())
         return ConversationHandler.END
+    if t == '✏️ Бошқа шаҳар':
+        await update.message.reply_text('🏙 Шаҳар номини ёзинг:')
+        return EDIT_CITY
     if not t:
         await update.message.reply_text('❗ Шаҳарни киритинг.')
         return EDIT_CITY
@@ -821,8 +832,31 @@ async def order_phone(update, context):
     return ORDER_ADDRESS
 
 
+def detect_city_from_text(text):
+    """Манзил матни ичида танилган шаҳарни топади."""
+    s = normalize_text(text)
+    if not s:
+        return ''
+    compact = s.replace(' ', '')
+    # Узунроқ номларни аввал текшириш хавфини камайтиради.
+    for city in sorted(CITY_COUNTRY, key=len, reverse=True):
+        if city in compact:
+            return city
+    return ''
+
+
 async def order_address(update, context):
-    context.user_data['order']['address'] = update.message.text.strip()
+    address = update.message.text.strip()
+    context.user_data['order']['address'] = address
+
+    detected_city = detect_city_from_text(address)
+    if detected_city:
+        code = country_from_city(detected_city)
+        context.user_data['order']['city'] = display_city(detected_city)
+        context.user_data['order']['country_code'] = code
+        context.user_data['order']['country_name'] = country_name(code)
+        context.user_data['order']['currency'] = currency(code)
+
     await update.message.reply_text('📝 Муаммони ёзинг:')
     return ORDER_PROBLEM
 
@@ -832,10 +866,20 @@ async def order_problem(update, context):
     o = context.user_data['order']
     o['problem'] = update.message.text.strip()
     o['telegram_id'] = tg
-    loc = get_location(tg)
-    if not loc:
+    profile_loc = get_location(tg)
+    if not profile_loc:
         await update.message.reply_text('❗ Аввало давлат ва шаҳарни танланг.')
         return ConversationHandler.END
+
+    loc = dict(profile_loc)
+    if o.get('city'):
+        loc.update({
+            'city': o['city'],
+            'country_code': o.get('country_code') or profile_loc['country_code'],
+            'country_name': o.get('country_name') or profile_loc['country_name'],
+            'currency': o.get('currency') or currency(o.get('country_code')) or profile_loc['currency'],
+        })
+
     conn = get_connection()
     try:
         with conn.cursor() as cur:
@@ -1229,13 +1273,13 @@ def build_application():
     worker_edit = ConversationHandler(
         entry_points=[CallbackQueryHandler(worker_edit_start, pattern=r'^worker_edit$')],
         states={
-            EDIT_COUNTRY: [MessageHandler(filters.TEXT & ~filters.COMMAND, worker_edit_country)],
-            EDIT_CITY: [MessageHandler(filters.TEXT & ~filters.COMMAND, worker_edit_city)],
-            EDIT_NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, worker_edit_name)],
-            EDIT_PHONE: [MessageHandler(filters.TEXT & ~filters.COMMAND, worker_edit_phone)],
-            EDIT_SERVICE: [MessageHandler(filters.TEXT & ~filters.COMMAND, worker_edit_service)],
-            EDIT_AREA: [MessageHandler(filters.TEXT & ~filters.COMMAND, worker_edit_area)],
-            EDIT_PRICE: [MessageHandler(filters.TEXT & ~filters.COMMAND, worker_edit_price)]
+            EDIT_COUNTRY: [MessageHandler(EDIT_INPUT_FILTER, worker_edit_country)],
+            EDIT_CITY: [MessageHandler(EDIT_INPUT_FILTER, worker_edit_city)],
+            EDIT_NAME: [MessageHandler(EDIT_INPUT_FILTER, worker_edit_name)],
+            EDIT_PHONE: [MessageHandler(EDIT_INPUT_FILTER, worker_edit_phone)],
+            EDIT_SERVICE: [MessageHandler(EDIT_INPUT_FILTER, worker_edit_service)],
+            EDIT_AREA: [MessageHandler(EDIT_INPUT_FILTER, worker_edit_area)],
+            EDIT_PRICE: [MessageHandler(EDIT_INPUT_FILTER, worker_edit_price)]
         },
         fallbacks=[CommandHandler('start', start)], allow_reentry=True
     )
@@ -1278,8 +1322,8 @@ def build_application():
         fallbacks=[CommandHandler('start',start)]
     )
 
-    app.add_handler(loc)
     app.add_handler(worker_edit)
+    app.add_handler(loc)
     app.add_handler(worker)
     app.add_handler(ann)
     app.add_handler(order)

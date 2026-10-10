@@ -1147,6 +1147,54 @@ def admin_ok(update):
     return ADMIN_ID and update.effective_user.id == ADMIN_ID
 
 
+def admin_keyboard():
+    return InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton('👨‍🔧 Усталар', callback_data='admin:workers'),
+            InlineKeyboardButton('🔔 Буюртмалар', callback_data='admin:orders')
+        ],
+        [
+            InlineKeyboardButton('📢 Эълонлар', callback_data='admin:announcements'),
+            InlineKeyboardButton('💳 Тўловлар', callback_data='admin:payments')
+        ],
+        [InlineKeyboardButton('📊 Статистика', callback_data='admin:stats')]
+    ])
+
+
+async def admin_cmd(update, context):
+    if not ADMIN_ID:
+        await update.message.reply_text(
+            '❌ ADMIN_ID Render Environment Variables да ўрнатилмаган.'
+        )
+        return
+    if not admin_ok(update):
+        await update.message.reply_text('❌ Рухсат йўқ.')
+        return
+    await update.message.reply_text(
+        '🛠 ADMIN PANEL\n\nКеракли бўлимни танланг:',
+        reply_markup=admin_keyboard()
+    )
+
+
+async def admin_menu_callback(update, context):
+    q = update.callback_query
+    await q.answer()
+    if not admin_ok(update):
+        await q.answer('❌ Рухсат йўқ.', show_alert=True)
+        return
+    action = q.data.split(':', 1)[1]
+    if action == 'workers':
+        await workers_cmd(update, context)
+    elif action == 'orders':
+        await orders_cmd(update, context)
+    elif action == 'announcements':
+        await announcements_cmd(update, context)
+    elif action == 'payments':
+        await payments_cmd(update, context)
+    elif action == 'stats':
+        await stats_cmd(update, context)
+
+
 async def workers_cmd(update, context):
     if not admin_ok(update):
         await update.message.reply_text('❌ Рухсат йўқ.')
@@ -1331,6 +1379,8 @@ def build_application():
     app.add_handler(CallbackQueryHandler(payment_callback, pattern=r'^payment:(info|paid)$'))
     app.add_handler(CallbackQueryHandler(accept_order, pattern=r'^accept:\d+$'))
     app.add_handler(CallbackQueryHandler(toggle, pattern=r'^toggle$'))
+    app.add_handler(CommandHandler('admin', admin_cmd))
+    app.add_handler(CallbackQueryHandler(admin_menu_callback, pattern=r'^admin:(workers|orders|announcements|payments|stats)$'))
     app.add_handler(CommandHandler('help', help_cmd))
     app.add_handler(CommandHandler('workers', workers_cmd))
     app.add_handler(CommandHandler('orders', orders_cmd))

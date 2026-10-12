@@ -1163,14 +1163,14 @@ def admin_keyboard():
 
 async def admin_cmd(update, context):
     if not ADMIN_ID:
-        await update.message.reply_text(
+        await update.effective_message.reply_text(
             '❌ ADMIN_ID Render Environment Variables да ўрнатилмаган.'
         )
         return
     if not admin_ok(update):
-        await update.message.reply_text('❌ Рухсат йўқ.')
+        await update.effective_message.reply_text('❌ Рухсат йўқ.')
         return
-    await update.message.reply_text(
+    await update.effective_message.reply_text(
         '🛠 ADMIN PANEL\n\nКеракли бўлимни танланг:',
         reply_markup=admin_keyboard()
     )
@@ -1178,10 +1178,10 @@ async def admin_cmd(update, context):
 
 async def admin_menu_callback(update, context):
     q = update.callback_query
-    await q.answer()
     if not admin_ok(update):
         await q.answer('❌ Рухсат йўқ.', show_alert=True)
         return
+    await q.answer()
     action = q.data.split(':', 1)[1]
     if action == 'workers':
         await workers_cmd(update, context)
@@ -1197,7 +1197,7 @@ async def admin_menu_callback(update, context):
 
 async def workers_cmd(update, context):
     if not admin_ok(update):
-        await update.message.reply_text('❌ Рухсат йўқ.')
+        await update.effective_message.reply_text('❌ Рухсат йўқ.')
         return
     repair_old_workers()
     conn = get_connection()
@@ -1209,18 +1209,18 @@ async def workers_cmd(update, context):
     finally:
         conn.close()
     if not rows:
-        await update.message.reply_text('👨‍🔧 Усталар йўқ.')
+        await update.effective_message.reply_text('👨‍🔧 Усталар йўқ.')
         return
     out = ['👨‍🔧 УСТАЛАР:\n']
     for r in rows:
         sub = '♾️ PRO' if r[9] and r[9] > datetime.now(timezone.utc) else f'🎁 {r[8]}/{FREE_ORDER_LIMIT}'
         out.append(f'#{r[0]} {"🟢" if r[7] else "🔴"}\n👤 {r[1]}\n📞 {r[2]}\n🔧 {r[3]}\n🌍 {r[4] or "-"}\n🏙 {r[5] or "-"}\n💰 {r[6]}\n{sub}\n')
-    await update.message.reply_text('\n'.join(out))
+    await update.effective_message.reply_text('\n'.join(out))
 
 
 async def orders_cmd(update, context):
     if not admin_ok(update):
-        await update.message.reply_text('❌ Рухсат йўқ.')
+        await update.effective_message.reply_text('❌ Рухсат йўқ.')
         return
     conn = get_connection()
     try:
@@ -1229,14 +1229,14 @@ async def orders_cmd(update, context):
             rows = cur.fetchall()
     finally:
         conn.close()
-    await update.message.reply_text('\n'.join([
+    await update.effective_message.reply_text('\n'.join([
         f'#{r[0]} — {r[6]}\n👤 {r[1]}\n📞 {r[2]}\n🔧 {r[3]}\n🌍 {r[4] or "-"}\n🏙 {r[5] or "-"}\n🕐 {r[7]}\n' for r in rows
     ]) or '🔔 Буюртмалар йўқ.')
 
 
 async def announcements_cmd(update, context):
     if not admin_ok(update):
-        await update.message.reply_text('❌ Рухсат йўқ.')
+        await update.effective_message.reply_text('❌ Рухсат йўқ.')
         return
     conn = get_connection()
     try:
@@ -1245,14 +1245,14 @@ async def announcements_cmd(update, context):
             rows = cur.fetchall()
     finally:
         conn.close()
-    await update.message.reply_text('\n'.join([
+    await update.effective_message.reply_text('\n'.join([
         f'#{r[0]}\n👤 {r[1]}\n📞 {r[2]}\n🔧 {r[3]}\n🌍 {r[4] or "-"}\n🏙 {r[5] or "-"}\n💰 {r[6]}\n📝 {r[7]}\n🕐 {r[8]}\n' for r in rows
     ]) or '📢 Эълонлар йўқ.')
 
 
 async def payments_cmd(update, context):
     if not admin_ok(update):
-        await update.message.reply_text('❌ Рухсат йўқ.')
+        await update.effective_message.reply_text('❌ Рухсат йўқ.')
         return
     conn = get_connection()
     try:
@@ -1264,17 +1264,17 @@ async def payments_cmd(update, context):
     finally:
         conn.close()
     if not rows:
-        await update.message.reply_text('💳 Тўловлар йўқ.')
+        await update.effective_message.reply_text('💳 Тўловлар йўқ.')
         return
     out = ['💳 PRO ТЎЛОВЛАР:\n']
     for r in rows:
         out.append(f'#{r[0]} — {r[5]}\n👨‍🔧 {r[7] or "-"}\n🆔 {r[2]}\n💰 {r[3]} {r[4]}\n🕐 {r[6]}\n')
-    await update.message.reply_text('\n'.join(out))
+    await update.effective_message.reply_text('\n'.join(out))
 
 
 async def stats_cmd(update, context):
     if not admin_ok(update):
-        await update.message.reply_text('❌ Рухсат йўқ.')
+        await update.effective_message.reply_text('❌ Рухсат йўқ.')
         return
     conn = get_connection()
     try:
@@ -1287,7 +1287,7 @@ async def stats_cmd(update, context):
             cur.execute("SELECT COUNT(*) FROM workers WHERE subscription_until > NOW()"); pro = cur.fetchone()[0]
     finally:
         conn.close()
-    await update.message.reply_text(
+    await update.effective_message.reply_text(
         f'📊 СТАТИСТИКА\n\n👨‍🔧 Жами усталар: {w}\n🟢 Фаол усталар: {aw}\n'
         f'♾️ PRO усталар: {pro}\n🔔 Буюртмалар: {o}\n📢 Эълонлар: {a}\n💳 Кутилаётган тўловлар: {pp}'
     )

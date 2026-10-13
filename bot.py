@@ -2,6 +2,7 @@ import os
 import re
 import logging
 from datetime import datetime, timezone, timedelta
+from decimal import Decimal
 
 import psycopg
 
@@ -33,7 +34,8 @@ if not DATABASE_URL:
     raise RuntimeError('DATABASE_URL топилмади')
 
 FREE_ORDER_LIMIT = 7
-SUBSCRIPTION_PRICE = 100
+SUBSCRIPTION_PRICE = Decimal("1.50")
+SUBSCRIPTION_CURRENCY = "USD"
 SUBSCRIPTION_DAYS = 30
 
 COUNTRIES = {
@@ -212,6 +214,9 @@ def init_database():
             )''')
             cur.execute('CREATE INDEX IF NOT EXISTS idx_workers_tg ON workers(telegram_id)')
             cur.execute('CREATE INDEX IF NOT EXISTS idx_orders_status ON orders(status)')
+            cur.execute('ALTER TABLE subscription_payments ALTER COLUMN amount TYPE NUMERIC(10,2) USING amount::numeric'
+            )
+            cur.execute("ALTER TABLE subscription_payments ALTER COLUMN amount SET DEFAULT 1.50")
             cur.execute('CREATE INDEX IF NOT EXISTS idx_payments_status ON subscription_payments(status)')
         conn.commit()
     finally:
@@ -332,7 +337,7 @@ def subscription_text(sub):
     used = sub['free_orders_used']
     if used < FREE_ORDER_LIMIT:
         return f'🎁 Бепул буюртмалар: {used}/{FREE_ORDER_LIMIT}'
-    return '🔒 Бепул 7 та буюртма тугаган. 100 сомлик PRO обуна керак.'
+    return '🔒 Бепул 7 та буюртма тугаган. Ойига $1.50 лик PRO обуна керак.'
 
 
 def payment_keyboard():
@@ -345,7 +350,7 @@ def payment_keyboard():
 async def send_payment_info(bot, chat_id):
     text = (
         f'💳 **Osh Service PRO**\n\n'
-        f'💰 Нархи: {SUBSCRIPTION_PRICE} сом\n'
+        f'💰 Нархи: ${SUBSCRIPTION_PRICE:.2f} USD / ой\n'
         f'📅 Муддати: {SUBSCRIPTION_DAYS} кун\n'
         f'♾️ Чексиз буюртма қабул қилиш\n\n'
         f'🏦 MBANK тўлов реквизити:\n{MBANK_PAYMENT_DETAILS}\n\n'
@@ -384,33 +389,68 @@ async def payment_callback(update, context):
                     payment_id = existing[0]
                 else:
                     cur.execute('''INSERT INTO subscription_payments(worker_id,telegram_id,amount,currency,status)
-                                   VALUES(%s,%s,%s,'сом','pending') RETURNING id''',
-                                (sub['id'], tg, SUBSCRIPTION_PRICE))
+                                   VALUES(%s,%s,%s,%s,'pending') RETURNING id''',
+                                (sub['id'], tg, SUBSCRIPTION_PRICE, SUBSCRIPTION_CURRENCY))
                     payment_id = cur.fetchone()[0]
                     cur.execute('UPDATE workers SET payment_pending=TRUE WHERE id=%s', (sub['id'],))
             conn.commit()
         finally:
             conn.close()
 
+        context.user_data['pending_payment_id'] = payment_id
         await q.message.reply_text(
-            f'✅ Тўлов сўровингиз қабул қилинди.\n\n🆔 Тўлов: #{payment_id}\n'
-            '⏳ Администратор тўловни текшириб, обунани фаоллаштиради.'
+            f'✅ Тўлов сўрови очилди: #{payment_id}\n\n'
+            f'💰 Тўлов: ${SUBSCRIPTION_PRICE:.2f} USD\n'
+            '📸 Энди MBANK орқали тўлов қилганингизнинг чеки/скриншотини шу ерга расм қилиб юборинг.\n\n'
+            '⚠️ Чекда карта рақамининг тўлиқ кўриниши ёки махфий маълумотлар бўлмасин. '
+            'Администратор тўловни текширгандан кейингина PRO ёқилади.'
         )
-        if ADMIN_ID:
-            try:
-                await context.bot.send_message(
-                    chat_id=ADMIN_ID,
-                    text=(f'💳 ЯНГИ PRO ТЎЛОВ СЎРОВИ!\n\n'
-                          f'🆔 Тўлов: #{payment_id}\n👨‍🔧 Уста: {tg}\n'
-                          f'💰 Сумма: {SUBSCRIPTION_PRICE} сом\n\n'
-                          f'Тўловни MBANK орқали текширинг.'),
-                    reply_markup=InlineKeyboardMarkup([[
-                        InlineKeyboardButton('✅ Тасдиқлаш', callback_data=f'payment_admin:approve:{payment_id}'),
-                        InlineKeyboardButton('❌ Рад этиш', callback_data=f'payment_admin:reject:{payment_id}')
-                    ]])
-                )
-            except Exception:
-                logger.exception('admin payment notification failed')
+
+
+async def payment_receipt_photo(update, context):
+    # Юборилган тўлов чекини админга тасдиқлаш тугмалари билан етказади.
+    if not update.effective_user or not update.message or not update.message.photo:
+        return
+    tg = update.effective_user.id
+    sub = get_worker_subscription(tg)
+    if not sub:
+        return
+    payment_id = context.user_data.get('pending_payment_id')
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            if payment_id:
+                cur.execute("SELECT id FROM subscription_payments WHERE id=%s AND worker_id=%s AND status='pending'", (payment_id, sub['id']))
+            else:
+                cur.execute("SELECT id FROM subscription_payments WHERE worker_id=%s AND status='pending' ORDER BY id DESC LIMIT 1", (sub['id'],))
+            row = cur.fetchone()
+    finally:
+        conn.close()
+    if not row:
+        return
+    payment_id = row[0]
+    if not ADMIN_ID:
+        await update.message.reply_text('❗ Админ ID созланмаган. Чек юборилмади; администратор билан боғланинг.')
+        return
+    photo_id = update.message.photo[-1].file_id
+    try:
+        await context.bot.send_photo(
+            chat_id=ADMIN_ID,
+            photo=photo_id,
+            caption=(f'💳 ЯНГИ PRO ТЎЛОВ ЧЕКИ\n\n'
+                     f'🆔 Тўлов: #{payment_id}\n👨‍🔧 Уста Telegram ID: {tg}\n'
+                     f'💰 Сумма: ${SUBSCRIPTION_PRICE:.2f} USD\n'
+                     'MBANK иловасида тушумни текшириб, кейин тасдиқланг.'),
+            reply_markup=InlineKeyboardMarkup([[
+                InlineKeyboardButton('✅ Тасдиқлаш', callback_data=f'payment_admin:approve:{payment_id}'),
+                InlineKeyboardButton('❌ Рад этиш', callback_data=f'payment_admin:reject:{payment_id}')
+            ]])
+        )
+        context.user_data.pop('pending_payment_id', None)
+        await update.message.reply_text('📨 Чек администраторга юборилди. Тўлов текширилгандан кейин PRO ёқилади.')
+    except Exception:
+        logger.exception('admin payment receipt delivery failed')
+        await update.message.reply_text('❌ Чекни администраторга юборишда хатолик. Кейинроқ қайта урининг.')
 
 
 async def admin_payment_callback(update, context):
@@ -646,7 +686,7 @@ async def profile(update, context):
         [InlineKeyboardButton('🔄 Фаол/нофаол', callback_data='toggle')]
     ]
     if not sub or not sub['subscribed']:
-        buttons.append([InlineKeyboardButton('💳 PRO — 100 сом/ой', callback_data='payment:info')])
+        buttons.append([InlineKeyboardButton('💳 PRO — $1.50/ой', callback_data='payment:info')])
     await update.message.reply_text(
         f"👤 МЕНИНГ ПРОФИЛИМ\n\n🌍 Давлат: {cn or '-'}\n🏙 Шаҳар: {city or '-'}\n"
         f"👤 Исм: {name}\n📞 Телефон: {phone}\n🔧 Хизмат: {service}\n📍 Ҳудуд: {area}\n"
@@ -972,8 +1012,8 @@ async def accept_order(update, context):
             if not subscribed and free_used >= FREE_ORDER_LIMIT:
                 await q.edit_message_text(
                     '🔒 Сиз 7 та бепул буюртмани қабул қилиб бўлдингиз.\n\n'
-                    '💳 Давом этиш учун ойига 100 сомлик PRO обуна керак.',
-                    reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton('💳 100 сом — PRO', callback_data='payment:info')]])
+                    '💳 Давом этиш учун ойига $1.50 лик PRO обуна керак.',
+                    reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton('💳 $1.50 — PRO', callback_data='payment:info')]])
                 )
                 return
 
@@ -1026,7 +1066,7 @@ async def accept_order(update, context):
         if new_free_used < FREE_ORDER_LIMIT:
             extra = f'\n\n🎁 Бепул қолган: {FREE_ORDER_LIMIT - new_free_used} та'
         else:
-            extra = '\n\n🔒 Кейинги буюртмалар учун 100 сомлик PRO обуна керак.'
+            extra = '\n\n🔒 Кейинги буюртмалар учун ойига $1.50 лик PRO обуна керак.'
     await q.edit_message_text(
         f'✅ БУЮРТМА ҚАБУЛ ҚИЛИНДИ!\n\n👤 Мижоз: {cname}\n📞 Телефон: {cphone}\n'
         f'🔧 Хизмат: {service}\n📍 Манзил: {address}\n📝 Муаммо: {problem}{extra}'
@@ -1377,6 +1417,7 @@ def build_application():
     app.add_handler(order)
     app.add_handler(CallbackQueryHandler(admin_payment_callback, pattern=r'^payment_admin:(approve|reject):\d+$'))
     app.add_handler(CallbackQueryHandler(payment_callback, pattern=r'^payment:(info|paid)$'))
+    app.add_handler(MessageHandler(filters.PHOTO, payment_receipt_photo))
     app.add_handler(CallbackQueryHandler(accept_order, pattern=r'^accept:\d+$'))
     app.add_handler(CallbackQueryHandler(toggle, pattern=r'^toggle$'))
     app.add_handler(CommandHandler('admin', admin_cmd))

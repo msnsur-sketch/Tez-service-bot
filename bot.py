@@ -60,6 +60,14 @@ SERVICES = [
 ]
 SERVICE_PATTERN = r'^(?:' + '|'.join(re.escape(x) for x in SERVICES) + r')$'
 
+# Асосий меню тугмалари телефон/исм/манзил сифатида қабул қилинмаслиги керак.
+MENU_NAV_ITEMS = [
+    '👤 Менинг профилим', '👨‍🔧 Уста чақириш', '👨‍🔧 Уста бўлиб рўйхатдан ўтиш',
+    '📢 Эълон бериш', '🔧 Хизматлар', 'Алоқа', '🌍 Давлат/шаҳар', '⬅️ Бош меню'
+]
+MENU_NAV_PATTERN = r'^(?:' + '|'.join(re.escape(x) for x in MENU_NAV_ITEMS + SERVICES) + r')$'
+NAV_SAFE_TEXT = filters.TEXT & ~filters.COMMAND & ~filters.Regex(MENU_NAV_PATTERN)
+
 EDIT_INPUT_FILTER = (
     filters.TEXT & ~filters.COMMAND &
     ~filters.Regex(r'^(?:👤 Менинг профилим|👨‍🔧 Уста чақириш|👨‍🔧 Уста бўлиб рўйхатдан ўтиш|📢 Эълон бериш|🔧 Хизматлар|Алоқа|🌍 Давлат/шаҳар|⬅️ Бош меню)$')
@@ -1347,16 +1355,39 @@ async def generic_menu(update, context):
         await update.message.reply_text('🏠 Бош меню', reply_markup=main_keyboard())
 
 
+async def conversation_menu_fallback(update, context):
+    # Фаол анкета ичида меню босилса, уни телефон ёки матн деб текширмайди.
+    t = (update.message.text or '').strip()
+    if t == '👤 Менинг профилим':
+        await profile(update, context)
+    elif t == '🔧 Хизматлар':
+        await services(update, context)
+    elif t == '👨‍🔧 Уста чақириш':
+        await worker_menu(update, context)
+    elif t == 'Алоқа':
+        await contact(update, context)
+    elif t == '⬅️ Бош меню':
+        await update.message.reply_text('🏠 Бош меню', reply_markup=main_keyboard())
+    else:
+        # Янги анкета/заказни бошлаш учун эски анкетани тугатиб, тугмани яна босиш керак.
+        await update.message.reply_text(
+            '↩️ Олдинги жараён бекор қилинди.\n\n'
+            'Энди керакли тугмани яна бир марта босинг.',
+            reply_markup=main_keyboard()
+        )
+    return ConversationHandler.END
+
+
 def build_application():
     app = Application.builder().token(BOT_TOKEN).build()
 
     loc = ConversationHandler(
         entry_points=[CommandHandler('start', start), MessageHandler(filters.Regex(r'^🌍 Давлат/шаҳар$'), location_menu_start)],
         states={
-            LOCATION_COUNTRY: [MessageHandler(filters.TEXT & ~filters.COMMAND, location_country)],
-            LOCATION_CITY: [MessageHandler(filters.TEXT & ~filters.COMMAND, location_city)]
+            LOCATION_COUNTRY: [MessageHandler(NAV_SAFE_TEXT, location_country)],
+            LOCATION_CITY: [MessageHandler(NAV_SAFE_TEXT, location_city)]
         },
-        fallbacks=[CommandHandler('start', start)], allow_reentry=True
+        fallbacks=[CommandHandler('start', start), MessageHandler(filters.Regex(MENU_NAV_PATTERN), conversation_menu_fallback)], allow_reentry=True
     )
     worker_edit = ConversationHandler(
         entry_points=[CallbackQueryHandler(worker_edit_start, pattern=r'^worker_edit$')],
@@ -1369,45 +1400,45 @@ def build_application():
             EDIT_AREA: [MessageHandler(EDIT_INPUT_FILTER, worker_edit_area)],
             EDIT_PRICE: [MessageHandler(EDIT_INPUT_FILTER, worker_edit_price)]
         },
-        fallbacks=[CommandHandler('start', start)], allow_reentry=True
+        fallbacks=[CommandHandler('start', start), MessageHandler(filters.Regex(MENU_NAV_PATTERN), conversation_menu_fallback)], allow_reentry=True
     )
 
     worker = ConversationHandler(
         entry_points=[MessageHandler(filters.Regex(r'^👨‍🔧 Уста бўлиб рўйхатдан ўтиш$'), worker_start)],
         states={
-            WORKER_COUNTRY:[MessageHandler(filters.TEXT & ~filters.COMMAND,worker_country)],
-            WORKER_CITY:[MessageHandler(filters.TEXT & ~filters.COMMAND,worker_city)],
-            WORKER_NAME:[MessageHandler(filters.TEXT & ~filters.COMMAND,worker_name)],
-            WORKER_PHONE:[MessageHandler(filters.TEXT & ~filters.COMMAND,worker_phone)],
+            WORKER_COUNTRY:[MessageHandler(NAV_SAFE_TEXT,worker_country)],
+            WORKER_CITY:[MessageHandler(NAV_SAFE_TEXT,worker_city)],
+            WORKER_NAME:[MessageHandler(NAV_SAFE_TEXT,worker_name)],
+            WORKER_PHONE:[MessageHandler(NAV_SAFE_TEXT,worker_phone)],
             WORKER_SERVICE:[MessageHandler(filters.Regex(SERVICE_PATTERN),worker_service)],
-            WORKER_AREA:[MessageHandler(filters.TEXT & ~filters.COMMAND,worker_area)],
-            WORKER_PRICE:[MessageHandler(filters.TEXT & ~filters.COMMAND,worker_price)]
+            WORKER_AREA:[MessageHandler(NAV_SAFE_TEXT,worker_area)],
+            WORKER_PRICE:[MessageHandler(NAV_SAFE_TEXT,worker_price)]
         },
-        fallbacks=[CommandHandler('start',start)]
+        fallbacks=[CommandHandler('start',start), MessageHandler(filters.Regex(MENU_NAV_PATTERN), conversation_menu_fallback)]
     )
     order = ConversationHandler(
         entry_points=[MessageHandler(filters.Regex(SERVICE_PATTERN), order_service)],
         states={
-            ORDER_NAME:[MessageHandler(filters.TEXT & ~filters.COMMAND,order_name)],
-            ORDER_PHONE:[MessageHandler(filters.TEXT & ~filters.COMMAND,order_phone)],
-            ORDER_ADDRESS:[MessageHandler(filters.TEXT & ~filters.COMMAND,order_address)],
-            ORDER_PROBLEM:[MessageHandler(filters.TEXT & ~filters.COMMAND,order_problem)]
+            ORDER_NAME:[MessageHandler(NAV_SAFE_TEXT,order_name)],
+            ORDER_PHONE:[MessageHandler(NAV_SAFE_TEXT,order_phone)],
+            ORDER_ADDRESS:[MessageHandler(NAV_SAFE_TEXT,order_address)],
+            ORDER_PROBLEM:[MessageHandler(NAV_SAFE_TEXT,order_problem)]
         },
-        fallbacks=[CommandHandler('start',start)]
+        fallbacks=[CommandHandler('start',start), MessageHandler(filters.Regex(MENU_NAV_PATTERN), conversation_menu_fallback)]
     )
     ann = ConversationHandler(
         entry_points=[MessageHandler(filters.Regex(r'^📢 Эълон бериш$'), announcement_start)],
         states={
-            ANN_COUNTRY:[MessageHandler(filters.TEXT & ~filters.COMMAND,ann_country)],
-            ANN_CITY:[MessageHandler(filters.TEXT & ~filters.COMMAND,ann_city)],
-            ANN_NAME:[MessageHandler(filters.TEXT & ~filters.COMMAND,ann_name)],
-            ANN_PHONE:[MessageHandler(filters.TEXT & ~filters.COMMAND,ann_phone)],
+            ANN_COUNTRY:[MessageHandler(NAV_SAFE_TEXT,ann_country)],
+            ANN_CITY:[MessageHandler(NAV_SAFE_TEXT,ann_city)],
+            ANN_NAME:[MessageHandler(NAV_SAFE_TEXT,ann_name)],
+            ANN_PHONE:[MessageHandler(NAV_SAFE_TEXT,ann_phone)],
             ANN_SERVICE:[MessageHandler(filters.Regex(SERVICE_PATTERN),ann_service)],
-            ANN_ADDRESS:[MessageHandler(filters.TEXT & ~filters.COMMAND,ann_address)],
-            ANN_BUDGET:[MessageHandler(filters.TEXT & ~filters.COMMAND,ann_budget)],
-            ANN_DETAILS:[MessageHandler(filters.TEXT & ~filters.COMMAND,ann_details)]
+            ANN_ADDRESS:[MessageHandler(NAV_SAFE_TEXT,ann_address)],
+            ANN_BUDGET:[MessageHandler(NAV_SAFE_TEXT,ann_budget)],
+            ANN_DETAILS:[MessageHandler(NAV_SAFE_TEXT,ann_details)]
         },
-        fallbacks=[CommandHandler('start',start)]
+        fallbacks=[CommandHandler('start',start), MessageHandler(filters.Regex(MENU_NAV_PATTERN), conversation_menu_fallback)]
     )
 
     app.add_handler(worker_edit)

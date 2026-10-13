@@ -218,6 +218,14 @@ def init_database():
             )
             cur.execute("ALTER TABLE subscription_payments ALTER COLUMN amount SET DEFAULT 1.50")
             cur.execute('CREATE INDEX IF NOT EXISTS idx_payments_status ON subscription_payments(status)')
+            cur.execute('''CREATE TABLE IF NOT EXISTS bot_settings (
+                setting_key TEXT PRIMARY KEY,
+                setting_value TEXT NOT NULL,
+                updated_at TIMESTAMPTZ DEFAULT NOW()
+            )''')
+            cur.execute('''INSERT INTO bot_settings(setting_key, setting_value)
+                           VALUES ('payment_details', %s)
+                           ON CONFLICT (setting_key) DO NOTHING''', (MBANK_PAYMENT_DETAILS,))
         conn.commit()
     finally:
         conn.close()
@@ -340,6 +348,31 @@ def subscription_text(sub):
     return '🔒 Бепул 7 та буюртма тугаган. Ойига $1.50 лик PRO обуна керак.'
 
 
+def get_payment_details():
+    # Return admin-configured details, falling back to the Render environment variable.
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT setting_value FROM bot_settings WHERE setting_key='payment_details'")
+            row = cur.fetchone()
+            return row[0] if row and row[0] else MBANK_PAYMENT_DETAILS
+    finally:
+        conn.close()
+
+
+def save_payment_details(value):
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute('''INSERT INTO bot_settings(setting_key, setting_value, updated_at)
+                           VALUES ('payment_details', %s, NOW())
+                           ON CONFLICT (setting_key) DO UPDATE
+                           SET setting_value=EXCLUDED.setting_value, updated_at=NOW()''', (value,))
+        conn.commit()
+    finally:
+        conn.close()
+
+
 def payment_keyboard():
     return InlineKeyboardMarkup([
         [InlineKeyboardButton('💳 Тўлов маълумоти', callback_data='payment:info')],
@@ -353,7 +386,7 @@ async def send_payment_info(bot, chat_id):
         f'💰 Нархи: ${SUBSCRIPTION_PRICE:.2f} USD / ой\n'
         f'📅 Муддати: {SUBSCRIPTION_DAYS} кун\n'
         f'♾️ Чексиз буюртма қабул қилиш\n\n'
-        f'🏦 MBANK тўлов реквизити:\n{MBANK_PAYMENT_DETAILS}\n\n'
+        f'🏦 Тўлов реквизити:\n{get_payment_details()}\n\n'
         f'Тўловни амалга оширгандан кейин «✅ Тўладим» тугмасини босинг.'
     )
     await bot.send_message(chat_id=chat_id, text=text, parse_mode='Markdown', reply_markup=payment_keyboard())
@@ -1197,7 +1230,8 @@ def admin_keyboard():
             InlineKeyboardButton('📢 Эълонлар', callback_data='admin:announcements'),
             InlineKeyboardButton('💳 Тўловлар', callback_data='admin:payments')
         ],
-        [InlineKeyboardButton('📊 Статистика', callback_data='admin:stats')]
+        [InlineKeyboardButton('📊 Статистика', callback_data='admin:stats')],
+        [InlineKeyboardButton('💳 Тўлов реквизитлари', callback_data='admin:payment_settings')]
     ])
 
 
@@ -1233,6 +1267,66 @@ async def admin_menu_callback(update, context):
         await payments_cmd(update, context)
     elif action == 'stats':
         await stats_cmd(update, context)
+    elif action == 'payment_settings':
+        await admin_payment_settings(update, context)
+    elif action == 'back':
+        await q.message.reply_text('🛠 ADMIN PANEL\n\nКеракли бўлимни танланг:', reply_markup=admin_keyboard())
+
+
+async def admin_payment_settings(update, context):
+    q = update.callback_query
+    if not admin_ok(update):
+        await q.answer('❌ Рухсат йўқ.', show_alert=True)
+        return
+    details = get_payment_details()
+    keyboard = InlineKeyboardMarkup([
+        [InlineKeyboardButton('✏️ Реквизитларни ўзгартириш', callback_data='admin:payment_edit')],
+        [InlineKeyboardButton('⬅️ Админ панел', callback_data='admin:back')]
+    ])
+    await q.message.reply_text(
+        '💳 ТЎЛОВ РЕКВИЗИТЛАРИ\n\n'
+        f'Ҳозирги маълумот:\n{details}\n\n'
+        'Ўзгартириш тугмасини босиб, карта рақами, карта эгаси ва банк маълумотларини битта хабарда юборинг.',
+        reply_markup=keyboard
+    )
+
+
+ADMIN_PAYMENT_DETAILS = 60
+
+
+async def admin_payment_edit_start(update, context):
+    q = update.callback_query
+    if not admin_ok(update):
+        await q.answer('❌ Рухсат йўқ.', show_alert=True)
+        return ConversationHandler.END
+    await q.answer()
+    await q.message.reply_text(
+        '✏️ Янги тўлов реквизитларини битта хабарда юборинг.\n\n'
+        'Масалан:\nБанк: MBANK\nКарта: 0000 0000 0000 0000\nКарта эгаси: ИСМ ФАМИЛИЯ\nВалюта: сом\n\n'
+        'Бекор қилиш учун /cancel юборинг.'
+    )
+    return ADMIN_PAYMENT_DETAILS
+
+
+async def admin_payment_details_save(update, context):
+    if not admin_ok(update):
+        await update.effective_message.reply_text('❌ Рухсат йўқ.')
+        return ConversationHandler.END
+    value = (update.effective_message.text or '').strip()
+    if len(value) < 5 or len(value) > 2000:
+        await update.effective_message.reply_text('❌ Маълумот 5 тадан 2000 тагача белги бўлиши керак. Қайта юборинг ёки /cancel босинг.')
+        return ADMIN_PAYMENT_DETAILS
+    save_payment_details(value)
+    await update.effective_message.reply_text(
+        '✅ Тўлов реквизитлари сақланди. Энди PRO тўлов маълумотини сўраган фойдаланувчиларга янги реквизитлар автоматик кўрсатилади.',
+        reply_markup=admin_keyboard()
+    )
+    return ConversationHandler.END
+
+
+async def admin_payment_edit_cancel(update, context):
+    await update.effective_message.reply_text('❎ Реквизитларни ўзгартириш бекор қилинди.', reply_markup=admin_keyboard())
+    return ConversationHandler.END
 
 
 async def workers_cmd(update, context):
@@ -1433,13 +1527,20 @@ def build_application():
     app.add_handler(worker)
     app.add_handler(ann)
     app.add_handler(order)
+    admin_payment_edit = ConversationHandler(
+        entry_points=[CallbackQueryHandler(admin_payment_edit_start, pattern=r'^admin:payment_edit$')],
+        states={ADMIN_PAYMENT_DETAILS: [MessageHandler(filters.TEXT & ~filters.COMMAND, admin_payment_details_save)]},
+        fallbacks=[CommandHandler('cancel', admin_payment_edit_cancel), CommandHandler('start', start)],
+        allow_reentry=True
+    )
+    app.add_handler(admin_payment_edit)
     app.add_handler(CallbackQueryHandler(admin_payment_callback, pattern=r'^payment_admin:(approve|reject):\d+$'))
     app.add_handler(CallbackQueryHandler(payment_callback, pattern=r'^payment:(info|paid)$'))
     app.add_handler(MessageHandler(filters.PHOTO, payment_receipt_photo))
     app.add_handler(CallbackQueryHandler(accept_order, pattern=r'^accept:\d+$'))
     app.add_handler(CallbackQueryHandler(toggle, pattern=r'^toggle$'))
     app.add_handler(CommandHandler('admin', admin_cmd))
-    app.add_handler(CallbackQueryHandler(admin_menu_callback, pattern=r'^admin:(workers|orders|announcements|payments|stats)$'))
+    app.add_handler(CallbackQueryHandler(admin_menu_callback, pattern=r'^admin:(workers|orders|announcements|payments|stats|payment_settings|back)$'))
     app.add_handler(CommandHandler('help', help_cmd))
     app.add_handler(CommandHandler('workers', workers_cmd))
     app.add_handler(CommandHandler('orders', orders_cmd))

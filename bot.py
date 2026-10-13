@@ -349,7 +349,7 @@ def payment_keyboard():
 
 async def send_payment_info(bot, chat_id):
     text = (
-        f'💳 **Osh Service PRO**\n\n'
+        f'💳 **TEZ Service PRO**\n\n'
         f'💰 Нархи: ${SUBSCRIPTION_PRICE:.2f} USD / ой\n'
         f'📅 Муддати: {SUBSCRIPTION_DAYS} кун\n'
         f'♾️ Чексиз буюртма қабул қилиш\n\n'
@@ -515,10 +515,10 @@ async def admin_payment_callback(update, context):
 async def start(update, context):
     loc = get_location(update.effective_user.id)
     if not loc:
-        await update.message.reply_text('🛠 Osh Service ботга хуш келибсиз!\n\n🌍 Аввало давлатни танланг:', reply_markup=country_keyboard())
+        await update.message.reply_text('🛠 TEZ Service ботга хуш келибсиз!\n\n🌍 Аввало давлатни танланг:', reply_markup=country_keyboard())
         return LOCATION_COUNTRY
     await update.message.reply_text(
-        f"🛠 Osh Service ботга хуш келибсиз!\n\n🌍 Давлат: {loc['country_name']}\n🏙 Шаҳар: {loc['city']}\n\nКеракли хизматни танланг:",
+        f"🛠 TEZ Service ботга хуш келибсиз!\n\n🌍 Давлат: {loc['country_name']}\n🏙 Шаҳар: {loc['city']}\n\nКеракли хизматни танланг:",
         reply_markup=main_keyboard()
     )
     return ConversationHandler.END
@@ -1352,7 +1352,7 @@ async def stats_cmd(update, context):
 
 
 async def contact(update, context):
-    await update.message.reply_text('📞 Алоқа\n\nOsh Service\nTelegram орқали биз билан боғланишингиз мумкин.')
+    await update.message.reply_text('📞 Алоқа\n\nTEZ Service\nTelegram орқали биз билан боғланишингиз мумкин.')
 
 
 async def worker_menu(update, context):
@@ -1457,7 +1457,7 @@ def build_application():
 def main():
     init_database()
     app = build_application()
-    logger.info('Osh Service bot starting')
+    logger.info('TEZ Service bot starting')
     if RENDER_EXTERNAL_URL:
         url = RENDER_EXTERNAL_URL.rstrip('/') + '/telegram/webhook'
         app.run_webhook(listen='0.0.0.0', port=PORT, url_path='telegram/webhook', webhook_url=url)

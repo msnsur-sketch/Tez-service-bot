@@ -186,7 +186,7 @@ def init_database():
             cur.execute('''CREATE TABLE IF NOT EXISTS user_profiles (telegram_id BIGINT PRIMARY KEY,country_code TEXT,country_name TEXT,city TEXT,currency TEXT,created_at TIMESTAMPTZ DEFAULT NOW(),updated_at TIMESTAMPTZ DEFAULT NOW())''')
             cur.execute('''CREATE TABLE IF NOT EXISTS workers (id SERIAL PRIMARY KEY,telegram_id BIGINT,name TEXT,phone TEXT,service TEXT,area TEXT,price TEXT,created_at TIMESTAMPTZ DEFAULT NOW())''')
             for c, d in [
-                ('is_active','BOOLEAN DEFAULT TRUE'), ('country_code','TEXT'), ('country_name','TEXT'),
+                ('is_active','BOOLEAN DEFAULT TRUE'), ('is_blocked','BOOLEAN DEFAULT FALSE'), ('country_code','TEXT'), ('country_name','TEXT'),
                 ('city','TEXT'), ('currency','TEXT'), ('free_orders_used','INTEGER DEFAULT 0'),
                 ('subscription_until','TIMESTAMPTZ'), ('payment_pending','BOOLEAN DEFAULT FALSE')
             ]:
@@ -977,7 +977,7 @@ async def send_order_to_workers(context, oid, o, loc):
     try:
         with conn.cursor() as cur:
             cur.execute('''SELECT id,telegram_id,name,phone,service,area,price,country_code,country_name,city,currency,COALESCE(is_active,TRUE)
-                           FROM workers WHERE telegram_id IS NOT NULL AND COALESCE(is_active,TRUE)=TRUE ORDER BY id DESC''')
+                           FROM workers WHERE telegram_id IS NOT NULL AND COALESCE(is_active,TRUE)=TRUE AND COALESCE(is_blocked,FALSE)=FALSE ORDER BY id DESC''')
             rows = cur.fetchall()
     finally:
         conn.close()
@@ -1023,13 +1023,16 @@ async def accept_order(update, context):
     conn = get_connection()
     try:
         with conn.cursor() as cur:
-            cur.execute('''SELECT id,name,phone,country_code,country_name,city,COALESCE(is_active,TRUE)
+            cur.execute('''SELECT id,name,phone,country_code,country_name,city,COALESCE(is_active,TRUE),COALESCE(is_blocked,FALSE)
                            FROM workers WHERE telegram_id=%s ORDER BY id DESC LIMIT 1''', (tg,))
             w = cur.fetchone()
             if not w:
                 await q.edit_message_text('❗ Уста профили топилмади.')
                 return
-            wid,wname,wphone,wcc,wcn,wcity,wactive = w
+            wid,wname,wphone,wcc,wcn,wcity,wactive,wblocked = w
+            if wblocked:
+                await q.edit_message_text('⛔ Администратор профилингизни блоклаган. Администратор билан боғланинг.')
+                return
             if not wactive:
                 await q.edit_message_text('🔴 Профилингиз нофаол.')
                 return
@@ -1231,6 +1234,7 @@ def admin_keyboard():
             InlineKeyboardButton('💳 Тўловлар', callback_data='admin:payments')
         ],
         [InlineKeyboardButton('📊 Статистика', callback_data='admin:stats')],
+        [InlineKeyboardButton('📢 Хабар юбориш', callback_data='admin:broadcast')],
         [InlineKeyboardButton('💳 Тўлов реквизитлари', callback_data='admin:payment_settings')]
     ])
 
@@ -1269,6 +1273,16 @@ async def admin_menu_callback(update, context):
         await stats_cmd(update, context)
     elif action == 'payment_settings':
         await admin_payment_settings(update, context)
+    elif action == 'broadcast':
+        await q.message.reply_text(
+            '📢 ХАБАР ЮБОРИШ\n\nКимга хабар юборамиз?',
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton('👥 Барча фойдаланувчиларга', callback_data='broadcast:all')],
+                [InlineKeyboardButton('👨‍🔧 Фақат усталарга', callback_data='broadcast:workers')],
+                [InlineKeyboardButton('👤 Telegram ID орқали битта одамга', callback_data='broadcast:user')],
+                [InlineKeyboardButton('⬅️ Админ панел', callback_data='admin:back')]
+            ])
+        )
     elif action == 'back':
         await q.message.reply_text('🛠 ADMIN PANEL\n\nКеракли бўлимни танланг:', reply_markup=admin_keyboard())
 
@@ -1292,6 +1306,8 @@ async def admin_payment_settings(update, context):
 
 
 ADMIN_PAYMENT_DETAILS = 60
+ADMIN_BROADCAST_TEXT = 70
+ADMIN_BROADCAST_USER_ID = 71
 
 
 async def admin_payment_edit_start(update, context):
@@ -1330,27 +1346,205 @@ async def admin_payment_edit_cancel(update, context):
 
 
 async def workers_cmd(update, context):
+    """Админ учун усталар рўйхати ва бошқарув тугмалари."""
     if not admin_ok(update):
         await update.effective_message.reply_text('❌ Рухсат йўқ.')
         return
-    repair_old_workers()
     conn = get_connection()
     try:
         with conn.cursor() as cur:
-            cur.execute('''SELECT id,name,phone,service,country_name,city,price,COALESCE(is_active,TRUE),COALESCE(free_orders_used,0),subscription_until
-                           FROM workers ORDER BY id DESC LIMIT 100''')
+            cur.execute("""SELECT DISTINCT ON (telegram_id) id,telegram_id,name,phone,service,country_name,city,price,
+                                  COALESCE(is_active,TRUE),COALESCE(is_blocked,FALSE),COALESCE(free_orders_used,0),subscription_until
+                           FROM workers WHERE telegram_id IS NOT NULL ORDER BY telegram_id,id DESC""")
             rows = cur.fetchall()
     finally:
         conn.close()
     if not rows:
         await update.effective_message.reply_text('👨‍🔧 Усталар йўқ.')
         return
-    out = ['👨‍🔧 УСТАЛАР:\n']
-    for r in rows:
-        sub = '♾️ PRO' if r[9] and r[9] > datetime.now(timezone.utc) else f'🎁 {r[8]}/{FREE_ORDER_LIMIT}'
-        out.append(f'#{r[0]} {"🟢" if r[7] else "🔴"}\n👤 {r[1]}\n📞 {r[2]}\n🔧 {r[3]}\n🌍 {r[4] or "-"}\n🏙 {r[5] or "-"}\n💰 {r[6]}\n{sub}\n')
-    await update.effective_message.reply_text('\n'.join(out))
+    await update.effective_message.reply_text(f'👨‍🔧 УСТАЛАР РЎЙХАТИ — жами: {len(rows)}')
+    for r in rows[:100]:
+        wid,tg,name,phone,service,cn,city,price,active,blocked,free_used,sub_until = r
+        sub = '♾️ PRO' if sub_until and sub_until > datetime.now(timezone.utc) else f'🎁 {free_used}/{FREE_ORDER_LIMIT}'
+        state = '⛔ БЛОКЛАНГАН' if blocked else ('🟢 Фаол' if active else '🔴 Нофаол')
+        text = (f'🆔 Уста ID: {wid}\nTelegram ID: {tg}\n👤 {name or "-"}\n📞 {phone or "-"}\n'
+                f'🔧 {service or "-"}\n🌍 {cn or "-"} — {city or "-"}\n💰 {price or "-"}\n{state}\n{sub}')
+        buttons = []
+        if blocked:
+            buttons.append(InlineKeyboardButton('🟢 Блокдан чиқариш', callback_data=f'workeradmin:unblock:{wid}'))
+        else:
+            buttons.append(InlineKeyboardButton('🔴 Блоклаш', callback_data=f'workeradmin:block:{wid}'))
+        keyboard = InlineKeyboardMarkup([
+            buttons,
+            [InlineKeyboardButton('🗑 Аккаунтни ўчириш', callback_data=f'workeradmin:delete:{wid}')]
+        ])
+        await update.effective_message.reply_text(text, reply_markup=keyboard)
 
+
+async def admin_worker_action(update, context):
+    q = update.callback_query
+    if not admin_ok(update):
+        await q.answer('❌ Рухсат йўқ.', show_alert=True)
+        return
+    await q.answer()
+    parts = q.data.split(':')
+    if len(parts) != 3 or not parts[2].isdigit():
+        await q.message.reply_text('❌ Нотўғри сўров.')
+        return
+    action, wid = parts[1], int(parts[2])
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute('SELECT telegram_id,name FROM workers WHERE id=%s', (wid,))
+            row = cur.fetchone()
+            if not row:
+                await q.message.reply_text('❗ Уста топилмади ёки аллақачон ўчирилган.')
+                return
+            worker_tg, worker_name = row
+            if action == 'delete':
+                keyboard = InlineKeyboardMarkup([[
+                    InlineKeyboardButton('🗑 Ҳа, ўчириш', callback_data=f'workeradmin:deleteconfirm:{wid}'),
+                    InlineKeyboardButton('❌ Бекор қилиш', callback_data=f'workeradmin:deletecancel:{wid}')
+                ]])
+                await q.message.reply_text(
+                    f'⚠️ {worker_name or worker_tg} устасининг профилини ўчирамизми?\n\n'
+                    'Профил ёзувлари ўчирилади, буюртмалар ва тўловлар тарихи сақланади.',
+                    reply_markup=keyboard
+                )
+                return
+            if action == 'deletecancel':
+                await q.message.reply_text('❎ Ўчириш бекор қилинди.')
+                return
+            if action == 'block':
+                cur.execute('UPDATE workers SET is_blocked=TRUE,is_active=FALSE WHERE telegram_id=%s', (worker_tg,))
+                result = f'🔴 {worker_name or worker_tg} блокланди. Профили ва тарихи сақланди.'
+            elif action == 'unblock':
+                cur.execute('UPDATE workers SET is_blocked=FALSE,is_active=TRUE WHERE telegram_id=%s', (worker_tg,))
+                result = f'🟢 {worker_name or worker_tg} блокдан чиқарилди ва фаоллаштирилди.'
+            elif action == 'deleteconfirm':
+                cur.execute('DELETE FROM workers WHERE telegram_id=%s', (worker_tg,))
+                result = f'🗑 {worker_name or worker_tg} устанинг профили ўчирилди. Тарих сақланди.'
+            else:
+                await q.message.reply_text('❌ Номаълум амал.')
+                return
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        logger.exception('admin worker action failed')
+        await q.message.reply_text('❌ Амални бажаришда хатолик юз берди.')
+        return
+    finally:
+        conn.close()
+    await q.message.reply_text(result)
+
+
+async def admin_broadcast_start(update, context):
+    q = update.callback_query
+    if not admin_ok(update):
+        await q.answer('❌ Рухсат йўқ.', show_alert=True)
+        return ConversationHandler.END
+    await q.answer()
+    target = q.data.split(':', 1)[1]
+    context.user_data['admin_broadcast_target'] = target
+    if target == 'user':
+        await q.message.reply_text('👤 Фойдаланувчининг Telegram ID рақамини юборинг. Бекор қилиш: /cancel')
+        return ADMIN_BROADCAST_USER_ID
+    await q.message.reply_text('✍️ Юбориладиган хабар матнини ёзинг. Бекор қилиш: /cancel')
+    return ADMIN_BROADCAST_TEXT
+
+
+async def admin_broadcast_user_id(update, context):
+    if not admin_ok(update):
+        await update.effective_message.reply_text('❌ Рухсат йўқ.')
+        return ConversationHandler.END
+    value = (update.effective_message.text or '').strip()
+    if not value.isdigit():
+        await update.effective_message.reply_text('❗ Telegram ID рақамлардан иборат бўлиши керак. Қайта юборинг ёки /cancel босинг.')
+        return ADMIN_BROADCAST_USER_ID
+    context.user_data['admin_broadcast_user_id'] = int(value)
+    await update.effective_message.reply_text('✍️ Энди хабар матнини юборинг. Бекор қилиш: /cancel')
+    return ADMIN_BROADCAST_TEXT
+
+
+async def admin_broadcast_send(update, context):
+    if not admin_ok(update):
+        await update.effective_message.reply_text('❌ Рухсат йўқ.')
+        return ConversationHandler.END
+    message = (update.effective_message.text or '').strip()
+    if not message:
+        await update.effective_message.reply_text('❗ Хабар бўш бўлмасин. Қайта юборинг ёки /cancel босинг.')
+        return ADMIN_BROADCAST_TEXT
+    target = context.user_data.get('admin_broadcast_target')
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            if target == 'workers':
+                cur.execute('SELECT DISTINCT telegram_id FROM workers WHERE telegram_id IS NOT NULL AND COALESCE(is_blocked,FALSE)=FALSE')
+            elif target == 'user':
+                cur.execute('SELECT telegram_id FROM user_profiles WHERE telegram_id=%s UNION SELECT telegram_id FROM workers WHERE telegram_id=%s',
+                            (context.user_data.get('admin_broadcast_user_id'), context.user_data.get('admin_broadcast_user_id')))
+            else:
+                cur.execute("""SELECT telegram_id FROM user_profiles WHERE telegram_id IS NOT NULL
+                               UNION SELECT telegram_id FROM workers WHERE telegram_id IS NOT NULL
+                               UNION SELECT telegram_id FROM orders WHERE telegram_id IS NOT NULL
+                               UNION SELECT telegram_id FROM announcements WHERE telegram_id IS NOT NULL""")
+            recipients = [r[0] for r in cur.fetchall() if r[0] and r[0] != ADMIN_ID]
+    finally:
+        conn.close()
+    if target == 'user' and not recipients:
+        recipients = [context.user_data.get('admin_broadcast_user_id')]
+    if not recipients:
+        await update.effective_message.reply_text('❗ Фойдаланувчилар топилмади.')
+        return ConversationHandler.END
+    context.user_data['admin_broadcast_message'] = message
+    context.user_data['admin_broadcast_recipients'] = recipients
+    labels = {'all':'барча фойдаланувчиларга', 'workers':'усталарга', 'user':'битта фойдаланувчига'}
+    keyboard = InlineKeyboardMarkup([[
+        InlineKeyboardButton('✅ Юбориш', callback_data='broadcastconfirm:yes'),
+        InlineKeyboardButton('❌ Бекор қилиш', callback_data='broadcastconfirm:no')
+    ]])
+    await update.effective_message.reply_text(
+        f'📢 ХАБАРНИ ТЕКШИРИНГ\n\nҚабул қилувчилар: {labels.get(target, target)}\n'
+        f'Сони: {len(recipients)}\n\nХабар:\n{message}\n\nЮборишни тасдиқлайсизми?',
+        reply_markup=keyboard
+    )
+    return ConversationHandler.END
+
+
+async def admin_broadcast_confirm(update, context):
+    q = update.callback_query
+    if not admin_ok(update):
+        await q.answer('❌ Рухсат йўқ.', show_alert=True)
+        return
+    await q.answer()
+    if q.data.endswith(':no'):
+        await q.edit_message_text('❎ Хабар юбориш бекор қилинди.')
+        for key in ('admin_broadcast_message','admin_broadcast_recipients','admin_broadcast_target','admin_broadcast_user_id'):
+            context.user_data.pop(key, None)
+        return
+    message = context.user_data.get('admin_broadcast_message')
+    recipients = context.user_data.get('admin_broadcast_recipients', [])
+    if not message or not recipients:
+        await q.edit_message_text('❗ Хабар маълумоти топилмади. Қайта бошланг: /admin')
+        return
+    sent = failed = 0
+    for chat_id in recipients:
+        try:
+            await context.bot.send_message(chat_id=chat_id, text=message)
+            sent += 1
+        except Exception as exc:
+            failed += 1
+            logger.info('broadcast failed for %s: %s', chat_id, exc)
+    await q.edit_message_text(f'📊 ХАБАР ЮБОРИШ ЯКУНИ\n\n✅ Юборилди: {sent}\n❌ Юборилмади: {failed}\n👥 Жами: {len(recipients)}')
+    for key in ('admin_broadcast_message','admin_broadcast_recipients','admin_broadcast_target','admin_broadcast_user_id'):
+        context.user_data.pop(key, None)
+
+
+async def admin_broadcast_cancel(update, context):
+    for key in ('admin_broadcast_message','admin_broadcast_recipients','admin_broadcast_target','admin_broadcast_user_id'):
+        context.user_data.pop(key, None)
+    await update.effective_message.reply_text('❎ Хабар юбориш бекор қилинди.', reply_markup=admin_keyboard())
+    return ConversationHandler.END
 
 async def orders_cmd(update, context):
     if not admin_ok(update):
@@ -1534,13 +1728,25 @@ def build_application():
         allow_reentry=True
     )
     app.add_handler(admin_payment_edit)
+    admin_broadcast = ConversationHandler(
+        entry_points=[CallbackQueryHandler(admin_broadcast_start, pattern=r'^broadcast:(all|workers|user)$')],
+        states={
+            ADMIN_BROADCAST_USER_ID: [MessageHandler(filters.TEXT & ~filters.COMMAND, admin_broadcast_user_id)],
+            ADMIN_BROADCAST_TEXT: [MessageHandler(filters.TEXT & ~filters.COMMAND, admin_broadcast_send)]
+        },
+        fallbacks=[CommandHandler('cancel', admin_broadcast_cancel), CommandHandler('start', start)],
+        allow_reentry=True
+    )
+    app.add_handler(admin_broadcast)
+    app.add_handler(CallbackQueryHandler(admin_broadcast_confirm, pattern=r'^broadcastconfirm:(yes|no)$'))
+    app.add_handler(CallbackQueryHandler(admin_worker_action, pattern=r'^workeradmin:(block|unblock|delete|deleteconfirm|deletecancel):\d+$'))
     app.add_handler(CallbackQueryHandler(admin_payment_callback, pattern=r'^payment_admin:(approve|reject):\d+$'))
     app.add_handler(CallbackQueryHandler(payment_callback, pattern=r'^payment:(info|paid)$'))
     app.add_handler(MessageHandler(filters.PHOTO, payment_receipt_photo))
     app.add_handler(CallbackQueryHandler(accept_order, pattern=r'^accept:\d+$'))
     app.add_handler(CallbackQueryHandler(toggle, pattern=r'^toggle$'))
     app.add_handler(CommandHandler('admin', admin_cmd))
-    app.add_handler(CallbackQueryHandler(admin_menu_callback, pattern=r'^admin:(workers|orders|announcements|payments|stats|payment_settings|back)$'))
+    app.add_handler(CallbackQueryHandler(admin_menu_callback, pattern=r'^admin:(workers|orders|announcements|payments|stats|payment_settings|broadcast|back)$'))
     app.add_handler(CommandHandler('help', help_cmd))
     app.add_handler(CommandHandler('workers', workers_cmd))
     app.add_handler(CommandHandler('orders', orders_cmd))

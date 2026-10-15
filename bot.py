@@ -70,6 +70,7 @@ ORDER_SERVICE, ORDER_NAME, ORDER_PHONE, ORDER_ADDRESS, ORDER_PROBLEM = range(10,
 ANN_COUNTRY, ANN_CITY, ANN_NAME, ANN_PHONE, ANN_SERVICE, ANN_ADDRESS, ANN_BUDGET, ANN_DETAILS = range(20, 28)
 LOCATION_COUNTRY, LOCATION_CITY = range(40, 42)
 EDIT_COUNTRY, EDIT_CITY, EDIT_NAME, EDIT_PHONE, EDIT_SERVICE, EDIT_AREA, EDIT_PRICE = range(50, 57)
+FEEDBACK_TEXT = 60
 
 
 def get_connection():
@@ -256,6 +257,7 @@ def main_keyboard():
     return ReplyKeyboardMarkup([
         ['🔧 Хизматлар','👨‍🔧 Уста чақириш'],
         ['📢 Эълон бериш','Алоқа'],
+        ['💡 Таклиф юбориш','⚠️ Шикоят юбориш'],
         ['👤 Менинг профилим'],
         ['🌍 Давлат/шаҳар']
     ], resize_keyboard=True)
@@ -1640,7 +1642,55 @@ async def stats_cmd(update, context):
 
 
 async def contact(update, context):
-    await update.message.reply_text('📞 Алоқа\n\nTEZ Service\nTelegram орқали биз билан боғланишингиз мумкин.')
+    await update.message.reply_text('📞 Алоқа\n\nTEZ Service\nТаклиф ёки шикоятингизни «💡 Таклиф юбориш» ёки «⚠️ Шикоят юбориш» тугмалари орқали администраторга юборишингиз мумкин.')
+
+
+async def feedback_start(update, context):
+    text = update.effective_message.text or ''
+    feedback_type = 'Таклиф' if text == '💡 Таклиф юбориш' else 'Шикоят'
+    context.user_data['feedback_type'] = feedback_type
+    await update.effective_message.reply_text(
+        f'✍️ {feedback_type} матнини ёзиб юборинг.\n\nБекор қилиш учун /cancel буйруғини юборинг.'
+    )
+    return FEEDBACK_TEXT
+
+
+async def feedback_receive(update, context):
+    message = update.effective_message
+    body = (message.text or '').strip()
+    if not body:
+        await message.reply_text('❗ Илтимос, матн кўринишида юборинг.')
+        return FEEDBACK_TEXT
+    user = update.effective_user
+    feedback_type = context.user_data.get('feedback_type', 'Мурожаат')
+    username = f'@{user.username}' if user.username else 'йўқ'
+    admin_text = (
+        f'📩 TEZ Service — янги {feedback_type.lower()}\n\n'
+        f'👤 Исми: {user.full_name}\n'
+        f'🔗 Username: {username}\n'
+        f'🆔 Telegram ID: {user.id}\n\n'
+        f'📝 Матн:\n{body}'
+    )
+    if not ADMIN_ID:
+        await message.reply_text('❌ Администратор ID созланмаган. Кейинроқ қайта уриниб кўринг.')
+        context.user_data.pop('feedback_type', None)
+        return ConversationHandler.END
+    try:
+        await context.bot.send_message(chat_id=ADMIN_ID, text=admin_text)
+    except Exception:
+        logger.exception('Failed to send feedback to admin')
+        await message.reply_text('❌ Хабарни юбориб бўлмади. Илтимос, кейинроқ қайта урининг.')
+        context.user_data.pop('feedback_type', None)
+        return ConversationHandler.END
+    await message.reply_text('✅ Мурожаатингиз администраторга юборилди. Раҳмат!', reply_markup=main_keyboard())
+    context.user_data.pop('feedback_type', None)
+    return ConversationHandler.END
+
+
+async def feedback_cancel(update, context):
+    context.user_data.pop('feedback_type', None)
+    await update.effective_message.reply_text('❎ Мурожаат юбориш бекор қилинди.', reply_markup=main_keyboard())
+    return ConversationHandler.END
 
 
 async def worker_menu(update, context):
@@ -1716,6 +1766,14 @@ def build_application():
         fallbacks=[CommandHandler('start',start)]
     )
 
+    feedback = ConversationHandler(
+        entry_points=[MessageHandler(filters.Regex(r'^(?:💡 Таклиф юбориш|⚠️ Шикоят юбориш)$'), feedback_start)],
+        states={FEEDBACK_TEXT: [MessageHandler(filters.TEXT & ~filters.COMMAND, feedback_receive)]},
+        fallbacks=[CommandHandler('cancel', feedback_cancel), CommandHandler('start', start)],
+        allow_reentry=True
+    )
+
+    app.add_handler(feedback)
     app.add_handler(worker_edit)
     app.add_handler(loc)
     app.add_handler(worker)

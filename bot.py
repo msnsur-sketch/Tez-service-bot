@@ -263,13 +263,38 @@ def main_keyboard():
     ], resize_keyboard=True)
 
 
-def service_keyboard():
-    return ReplyKeyboardMarkup([
-        ['🔧 Сантехник','⚡ Электрик'],
-        ['📱 Телефон таъмири','💻 Компьютер таъмири'],
-        ['🧹 Уй тозалаш','🪑 Мебель таъмири'],
-        ['⬅️ Бош меню']
-    ], resize_keyboard=True)
+def service_keyboard(selected=None, multi=False):
+    selected = set(selected or [])
+    if not multi:
+        return ReplyKeyboardMarkup([
+            ['🔧 Сантехник','⚡ Электрик'],
+            ['📱 Телефон таъмири','💻 Компьютер таъмири'],
+            ['🧹 Уй тозалаш','🪑 Мебель таъмири'],
+            ['⬅️ Бош меню']
+        ], resize_keyboard=True)
+    labels = [[(('☑️ ' if service in selected else '⬜ ') + service) for service in row]
+              for row in [SERVICES[0:2], SERVICES[2:4], SERVICES[4:6]]]
+    labels.append(['✅ Танловни тасдиқлаш'])
+    labels.append(['⬅️ Бош меню'])
+    return ReplyKeyboardMarkup(labels, resize_keyboard=True)
+
+
+def parse_selected_services(value):
+    # Convert stored comma-separated service names to known service labels.
+    parts = [part.strip() for part in re.split(r'[,;/|\n]+', str(value or '')) if part.strip()]
+    selected = []
+    for service in SERVICES:
+        if service in parts or any(canonical_service(part) == canonical_service(service) for part in parts):
+            selected.append(service)
+    return selected
+
+
+def service_selection_prompt(selected=None):
+    chosen = selected or []
+    status = '\n'.join(f"{'☑️' if s in chosen else '⬜'} {s}" for s in SERVICES)
+    return ('🔧 Қайси хизматларни кўрсатасиз?\n\n'
+            'Бир нечта хизматни танлаш мумкин. Танланган тугмани яна босиб, танловдан чиқариш мумкин.\n\n'
+            f'{status}\n\nТугатгач, «✅ Танловни тасдиқлаш»ни босинг.')
 
 
 def country_keyboard():
@@ -648,17 +673,36 @@ async def worker_phone(update, context):
         await update.message.reply_text('❗ Телефон рақами нотўғри.')
         return WORKER_PHONE
     context.user_data['worker']['phone'] = p
-    await update.message.reply_text('🔧 Хизматни танланг:', reply_markup=service_keyboard())
+    context.user_data['worker']['selected_services'] = []
+    await update.message.reply_text(service_selection_prompt(), reply_markup=service_keyboard(multi=True))
     return WORKER_SERVICE
 
 
 async def worker_service(update, context):
-    if update.message.text not in SERVICES:
-        await update.message.reply_text('❗ Хизматни тугма орқали танланг.', reply_markup=service_keyboard())
+    text = (update.message.text or '').strip()
+    w = context.user_data.setdefault('worker', {})
+    selected = w.setdefault('selected_services', [])
+    if text == '⬅️ Бош меню':
+        context.user_data.pop('worker', None)
+        await update.message.reply_text('🏠 Бош меню', reply_markup=main_keyboard())
+        return ConversationHandler.END
+    if text == '✅ Танловни тасдиқлаш':
+        if not selected:
+            await update.message.reply_text('❗ Камида битта хизматни танланг.', reply_markup=service_keyboard(selected, multi=True))
+            return WORKER_SERVICE
+        w['service'] = ', '.join(selected)
+        await update.message.reply_text('📍 Ҳудудингизни ёзинг:')
+        return WORKER_AREA
+    service = text.removeprefix('☑️ ').removeprefix('⬜ ')
+    if service not in SERVICES:
+        await update.message.reply_text('❗ Хизматларни тугма орқали танланг.', reply_markup=service_keyboard(selected, multi=True))
         return WORKER_SERVICE
-    context.user_data['worker']['service'] = update.message.text
-    await update.message.reply_text('📍 Ҳудудингизни ёзинг:')
-    return WORKER_AREA
+    if service in selected:
+        selected.remove(service)
+    else:
+        selected.append(service)
+    await update.message.reply_text(service_selection_prompt(selected), reply_markup=service_keyboard(selected, multi=True))
+    return WORKER_SERVICE
 
 
 async def worker_area(update, context):
@@ -820,18 +864,37 @@ async def worker_edit_phone(update, context):
     if len(re.sub(r'\D', '', p)) < 7:
         await update.message.reply_text('❗ Телефон рақами нотўғри.')
         return EDIT_PHONE
-    context.user_data['worker_edit']['phone'] = p
-    await update.message.reply_text('🔧 Хизматни танланг:', reply_markup=service_keyboard())
+    w = context.user_data['worker_edit']
+    w['selected_services'] = parse_selected_services(w.get('service', ''))
+    await update.message.reply_text(service_selection_prompt(w['selected_services']), reply_markup=service_keyboard(w['selected_services'], multi=True))
     return EDIT_SERVICE
 
 
 async def worker_edit_service(update, context):
-    if update.message.text not in SERVICES:
-        await update.message.reply_text('❗ Хизматни тугма орқали танланг.', reply_markup=service_keyboard())
+    text = (update.message.text or '').strip()
+    w = context.user_data['worker_edit']
+    selected = w.setdefault('selected_services', [])
+    if text == '⬅️ Бош меню':
+        context.user_data.pop('worker_edit', None)
+        await update.message.reply_text('🏠 Бош меню', reply_markup=main_keyboard())
+        return ConversationHandler.END
+    if text == '✅ Танловни тасдиқлаш':
+        if not selected:
+            await update.message.reply_text('❗ Камида битта хизматни танланг.', reply_markup=service_keyboard(selected, multi=True))
+            return EDIT_SERVICE
+        w['service'] = ', '.join(selected)
+        await update.message.reply_text(f"📍 Ҳудудингизни ёзинг:\n\nҲозирги: {w['area'] or '-'}")
+        return EDIT_AREA
+    service = text.removeprefix('☑️ ').removeprefix('⬜ ')
+    if service not in SERVICES:
+        await update.message.reply_text('❗ Хизматларни тугма орқали танланг.', reply_markup=service_keyboard(selected, multi=True))
         return EDIT_SERVICE
-    context.user_data['worker_edit']['service'] = update.message.text
-    await update.message.reply_text(f"📍 Ҳудудингизни ёзинг:\n\nҲозирги: {context.user_data['worker_edit']['area'] or '-'}")
-    return EDIT_AREA
+    if service in selected:
+        selected.remove(service)
+    else:
+        selected.append(service)
+    await update.message.reply_text(service_selection_prompt(selected), reply_markup=service_keyboard(selected, multi=True))
+    return EDIT_SERVICE
 
 
 async def worker_edit_area(update, context):
@@ -1721,7 +1784,7 @@ def build_application():
             EDIT_CITY: [MessageHandler(EDIT_INPUT_FILTER, worker_edit_city)],
             EDIT_NAME: [MessageHandler(EDIT_INPUT_FILTER, worker_edit_name)],
             EDIT_PHONE: [MessageHandler(EDIT_INPUT_FILTER, worker_edit_phone)],
-            EDIT_SERVICE: [MessageHandler(EDIT_INPUT_FILTER, worker_edit_service)],
+            EDIT_SERVICE: [MessageHandler(filters.TEXT & ~filters.COMMAND, worker_edit_service)],
             EDIT_AREA: [MessageHandler(EDIT_INPUT_FILTER, worker_edit_area)],
             EDIT_PRICE: [MessageHandler(EDIT_INPUT_FILTER, worker_edit_price)]
         },
@@ -1735,7 +1798,7 @@ def build_application():
             WORKER_CITY:[MessageHandler(filters.TEXT & ~filters.COMMAND,worker_city)],
             WORKER_NAME:[MessageHandler(filters.TEXT & ~filters.COMMAND,worker_name)],
             WORKER_PHONE:[MessageHandler(filters.TEXT & ~filters.COMMAND,worker_phone)],
-            WORKER_SERVICE:[MessageHandler(filters.Regex(SERVICE_PATTERN),worker_service)],
+            WORKER_SERVICE:[MessageHandler(filters.TEXT & ~filters.COMMAND,worker_service)],
             WORKER_AREA:[MessageHandler(filters.TEXT & ~filters.COMMAND,worker_area)],
             WORKER_PRICE:[MessageHandler(filters.TEXT & ~filters.COMMAND,worker_price)]
         },

@@ -35,8 +35,9 @@ if not DATABASE_URL:
     raise RuntimeError('DATABASE_URL топилмади')
 
 FREE_ORDER_LIMIT = 7
-SUBSCRIPTION_PRICE = Decimal("1.50")
-SUBSCRIPTION_CURRENCY = "USD"
+FREE_ANNOUNCEMENT_LIMIT = 7
+SUBSCRIPTION_PRICE = Decimal("19990.00")
+SUBSCRIPTION_CURRENCY = "UZS"
 SUBSCRIPTION_DAYS = 30
 
 COUNTRIES = {
@@ -218,12 +219,19 @@ def init_database():
             cur.execute('''CREATE TABLE IF NOT EXISTS announcements (id SERIAL PRIMARY KEY,telegram_id BIGINT,name TEXT,phone TEXT,service TEXT,address TEXT,budget TEXT,details TEXT,created_at TIMESTAMPTZ DEFAULT NOW())''')
             for c, d in [('country_code','TEXT'),('country_name','TEXT'),('city','TEXT'),('currency','TEXT')]:
                 cur.execute(f'ALTER TABLE announcements ADD COLUMN IF NOT EXISTS {c} {d}')
+            cur.execute('''CREATE TABLE IF NOT EXISTS user_subscriptions (
+                telegram_id BIGINT PRIMARY KEY,
+                subscription_until TIMESTAMPTZ,
+                payment_pending BOOLEAN NOT NULL DEFAULT FALSE,
+                updated_at TIMESTAMPTZ DEFAULT NOW()
+            )''')
             cur.execute('''CREATE TABLE IF NOT EXISTS subscription_payments (
                 id SERIAL PRIMARY KEY,
-                worker_id INTEGER NOT NULL,
+                worker_id INTEGER,
                 telegram_id BIGINT NOT NULL,
-                amount INTEGER NOT NULL DEFAULT 100,
-                currency TEXT NOT NULL DEFAULT 'сом',
+                amount NUMERIC(10,2) NOT NULL DEFAULT 19990.00,
+                currency TEXT NOT NULL DEFAULT 'UZS',
+                subscription_type TEXT NOT NULL DEFAULT 'worker',
                 status TEXT NOT NULL DEFAULT 'pending',
                 created_at TIMESTAMPTZ DEFAULT NOW(),
                 reviewed_at TIMESTAMPTZ,
@@ -231,9 +239,11 @@ def init_database():
             )''')
             cur.execute('CREATE INDEX IF NOT EXISTS idx_workers_tg ON workers(telegram_id)')
             cur.execute('CREATE INDEX IF NOT EXISTS idx_orders_status ON orders(status)')
-            cur.execute('ALTER TABLE subscription_payments ALTER COLUMN amount TYPE NUMERIC(10,2) USING amount::numeric'
-            )
-            cur.execute("ALTER TABLE subscription_payments ALTER COLUMN amount SET DEFAULT 1.50")
+            cur.execute('ALTER TABLE subscription_payments ALTER COLUMN amount TYPE NUMERIC(10,2) USING amount::numeric')
+            cur.execute('ALTER TABLE subscription_payments ALTER COLUMN amount SET DEFAULT 19990.00')
+            cur.execute('ALTER TABLE subscription_payments ALTER COLUMN worker_id DROP NOT NULL')
+            cur.execute("ALTER TABLE subscription_payments ADD COLUMN IF NOT EXISTS subscription_type TEXT NOT NULL DEFAULT 'worker'")
+            cur.execute("ALTER TABLE subscription_payments ALTER COLUMN currency SET DEFAULT 'UZS'")
             cur.execute('CREATE INDEX IF NOT EXISTS idx_payments_status ON subscription_payments(status)')
             cur.execute('''CREATE TABLE IF NOT EXISTS bot_settings (
                 setting_key TEXT PRIMARY KEY,
@@ -393,7 +403,7 @@ def subscription_text(sub):
     used = sub['free_orders_used']
     if used < FREE_ORDER_LIMIT:
         return f'🎁 Бепул буюртмалар: {used}/{FREE_ORDER_LIMIT}'
-    return '🔒 Бепул 7 та буюртма тугаган. Ойига $1.50 лик PRO обуна керак.'
+    return '🔒 7 та бепул буюртма тугаган. PRO обуна: 19 990 сўм / 30 кун.'
 
 
 def get_payment_details():
@@ -421,27 +431,35 @@ def save_payment_details(value):
         conn.close()
 
 
-def payment_keyboard():
+def payment_keyboard(subscription_type='worker'):
+    prefix = 'ads' if subscription_type == 'ads' else 'worker'
     return InlineKeyboardMarkup([
-        [InlineKeyboardButton('💳 Тўлов маълумоти', callback_data='payment:info')],
-        [InlineKeyboardButton('✅ Тўладим', callback_data='payment:paid')]
+        [InlineKeyboardButton('💳 Тўлов маълумоти', callback_data=f'payment:{prefix}_info')],
+        [InlineKeyboardButton('✅ Тўладим', callback_data=f'payment:{prefix}_paid')]
     ])
 
 
-async def send_payment_info(bot, chat_id):
+async def send_payment_info(bot, chat_id, subscription_type='worker'):
+    if subscription_type == 'ads':
+        purpose = '📢 Эълон беришни давом эттириш'
+        benefit = '📢 Эълонларни чексиз жойлаштириш'
+    else:
+        purpose = '👨‍🔧 Уста PRO обунаси'
+        benefit = '♾️ Чексиз буюртма қабул қилиш'
     text = (
-        f'💳 **TEZ Service PRO**\n\n'
-        f'💰 Нархи: ${SUBSCRIPTION_PRICE:.2f} USD / ой\n'
+        f'💳 **TEZ Service — ойлик обуна**\n\n'
+        f'{purpose}\n'
+        f'💰 Нархи: 19 990 сўм / ой\n'
         f'📅 Муддати: {SUBSCRIPTION_DAYS} кун\n'
-        f'♾️ Чексиз буюртма қабул қилиш\n\n'
+        f'{benefit}\n\n'
         f'🏦 Тўлов реквизити:\n{get_payment_details()}\n\n'
-        f'Тўловни амалга оширгандан кейин «✅ Тўладим» тугмасини босинг.'
+        f'Тўловни амалга оширгандан кейин «✅ Тўладим» тугмасини босинг ва чек расмини юборинг.'
     )
-    await bot.send_message(chat_id=chat_id, text=text, parse_mode='Markdown', reply_markup=payment_keyboard())
+    await bot.send_message(chat_id=chat_id, text=text, parse_mode='Markdown', reply_markup=payment_keyboard(subscription_type))
 
 
 async def payment_start(update, context):
-    await send_payment_info(context.bot, update.effective_user.id)
+    await send_payment_info(context.bot, update.effective_user.id, 'worker')
 
 
 async def payment_callback(update, context):
@@ -449,86 +467,84 @@ async def payment_callback(update, context):
     await q.answer()
     action = q.data.split(':', 1)[1]
     tg = q.from_user.id
-    sub = get_worker_subscription(tg)
-    if not sub:
+    is_ads = action.startswith('ads_')
+    subscription_type = 'ads' if is_ads else 'worker'
+    sub = get_worker_subscription(tg) if not is_ads else None
+    if not is_ads and not sub:
         await q.message.reply_text('❗ Аввало уста сифатида рўйхатдан ўтинг.')
         return
-
-    if action == 'info':
-        await send_payment_info(context.bot, tg)
+    if action.endswith('_info') or action == 'info':
+        await send_payment_info(context.bot, tg, subscription_type)
         return
-
-    if action == 'paid':
+    if action.endswith('_paid') or action == 'paid':
         conn = get_connection()
         try:
             with conn.cursor() as cur:
-                cur.execute('''SELECT id FROM subscription_payments
-                               WHERE worker_id=%s AND status='pending'
-                               ORDER BY id DESC LIMIT 1''', (sub['id'],))
+                cur.execute("SELECT id FROM subscription_payments WHERE telegram_id=%s AND subscription_type=%s AND status='pending' ORDER BY id DESC LIMIT 1", (tg, subscription_type))
                 existing = cur.fetchone()
                 if existing:
                     payment_id = existing[0]
                 else:
-                    cur.execute('''INSERT INTO subscription_payments(worker_id,telegram_id,amount,currency,status)
-                                   VALUES(%s,%s,%s,%s,'pending') RETURNING id''',
-                                (sub['id'], tg, SUBSCRIPTION_PRICE, SUBSCRIPTION_CURRENCY))
+                    cur.execute('''INSERT INTO subscription_payments(worker_id,telegram_id,amount,currency,subscription_type,status)
+                                   VALUES(%s,%s,%s,%s,%s,'pending') RETURNING id''',
+                                (sub['id'] if sub else None, tg, SUBSCRIPTION_PRICE, SUBSCRIPTION_CURRENCY, subscription_type))
                     payment_id = cur.fetchone()[0]
+                if subscription_type == 'worker':
                     cur.execute('UPDATE workers SET payment_pending=TRUE WHERE id=%s', (sub['id'],))
+                else:
+                    cur.execute('''INSERT INTO user_subscriptions(telegram_id,payment_pending,updated_at) VALUES(%s,TRUE,NOW())
+                                   ON CONFLICT(telegram_id) DO UPDATE SET payment_pending=TRUE,updated_at=NOW()''', (tg,))
             conn.commit()
         finally:
             conn.close()
-
         context.user_data['pending_payment_id'] = payment_id
+        context.user_data['pending_payment_type'] = subscription_type
         await q.message.reply_text(
             f'✅ Тўлов сўрови очилди: #{payment_id}\n\n'
-            f'💰 Тўлов: ${SUBSCRIPTION_PRICE:.2f} USD\n'
-            '📸 Энди MBANK орқали тўлов қилганингизнинг чеки/скриншотини шу ерга расм қилиб юборинг.\n\n'
+            '💰 Тўлов: 19 990 сўм\n'
+            '📸 Тўлов чеки/скриншотини шу ерга расм қилиб юборинг.\n\n'
             '⚠️ Чекда карта рақамининг тўлиқ кўриниши ёки махфий маълумотлар бўлмасин. '
-            'Администратор тўловни текширгандан кейингина PRO ёқилади.'
+            'Администратор тўловни текширгандан кейингина обуна ёқилади.'
         )
 
 
 async def payment_receipt_photo(update, context):
-    # Юборилган тўлов чекини админга тасдиқлаш тугмалари билан етказади.
     if not update.effective_user or not update.message or not update.message.photo:
         return
     tg = update.effective_user.id
-    sub = get_worker_subscription(tg)
-    if not sub:
-        return
     payment_id = context.user_data.get('pending_payment_id')
     conn = get_connection()
     try:
         with conn.cursor() as cur:
             if payment_id:
-                cur.execute("SELECT id FROM subscription_payments WHERE id=%s AND worker_id=%s AND status='pending'", (payment_id, sub['id']))
+                cur.execute("SELECT id,subscription_type FROM subscription_payments WHERE id=%s AND telegram_id=%s AND status='pending'", (payment_id, tg))
             else:
-                cur.execute("SELECT id FROM subscription_payments WHERE worker_id=%s AND status='pending' ORDER BY id DESC LIMIT 1", (sub['id'],))
+                cur.execute("SELECT id,subscription_type FROM subscription_payments WHERE telegram_id=%s AND status='pending' ORDER BY id DESC LIMIT 1", (tg,))
             row = cur.fetchone()
     finally:
         conn.close()
     if not row:
         return
-    payment_id = row[0]
+    payment_id, payment_type = row
     if not ADMIN_ID:
-        await update.message.reply_text('❗ Админ ID созланмаган. Чек юборилмади; администратор билан боғланинг.')
+        await update.message.reply_text('❗ Админ ID созланмаган. Администратор билан боғланинг.')
         return
     photo_id = update.message.photo[-1].file_id
+    purpose = 'ЭЪЛОНЧИ' if payment_type == 'ads' else 'УСТА PRO'
     try:
         await context.bot.send_photo(
-            chat_id=ADMIN_ID,
-            photo=photo_id,
-            caption=(f'💳 ЯНГИ PRO ТЎЛОВ ЧЕКИ\n\n'
-                     f'🆔 Тўлов: #{payment_id}\n👨‍🔧 Уста Telegram ID: {tg}\n'
-                     f'💰 Сумма: ${SUBSCRIPTION_PRICE:.2f} USD\n'
-                     'MBANK иловасида тушумни текшириб, кейин тасдиқланг.'),
+            chat_id=ADMIN_ID, photo=photo_id,
+            caption=(f'💳 ЯНГИ ТЎЛОВ ЧЕКИ — {purpose}\n\n'
+                     f'🆔 Тўлов: #{payment_id}\n👤 Telegram ID: {tg}\n'
+                     '💰 Сумма: 19 990 сўм / 30 кун\nТушумни текшириб, кейин тасдиқланг.'),
             reply_markup=InlineKeyboardMarkup([[
                 InlineKeyboardButton('✅ Тасдиқлаш', callback_data=f'payment_admin:approve:{payment_id}'),
                 InlineKeyboardButton('❌ Рад этиш', callback_data=f'payment_admin:reject:{payment_id}')
             ]])
         )
         context.user_data.pop('pending_payment_id', None)
-        await update.message.reply_text('📨 Чек администраторга юборилди. Тўлов текширилгандан кейин PRO ёқилади.')
+        context.user_data.pop('pending_payment_type', None)
+        await update.message.reply_text('📨 Чек администраторга юборилди. Тўлов текширилгандан кейин обуна ёқилади.')
     except Exception:
         logger.exception('admin payment receipt delivery failed')
         await update.message.reply_text('❌ Чекни администраторга юборишда хатолик. Кейинроқ қайта урининг.')
@@ -540,43 +556,53 @@ async def admin_payment_callback(update, context):
     if not admin_ok(update):
         await q.edit_message_text('❌ Рухсат йўқ.')
         return
-
     parts = q.data.split(':')
     if len(parts) != 3:
         await q.edit_message_text('❌ Нотўғри тўлов сўрови.')
         return
     action, payment_id = parts[1], int(parts[2])
-
     conn = get_connection()
+    worker_tg = None
     try:
         with conn.cursor() as cur:
-            cur.execute('''SELECT id,worker_id,telegram_id,amount,status
+            cur.execute('''SELECT id,worker_id,telegram_id,amount,status,COALESCE(subscription_type,'worker')
                            FROM subscription_payments WHERE id=%s FOR UPDATE''', (payment_id,))
             p = cur.fetchone()
             if not p:
                 await q.edit_message_text('❗ Тўлов сўрови топилмади.')
                 return
-            pid, worker_id, worker_tg, amount, status = p
+            _, worker_id, worker_tg, amount, status, subscription_type = p
             if status != 'pending':
                 await q.edit_message_text(f'⚠️ Бу тўлов аллақачон кўриб чиқилган: {status}')
                 return
-
+            now = datetime.now(timezone.utc)
             if action == 'approve':
-                cur.execute('SELECT subscription_until FROM workers WHERE id=%s FOR UPDATE', (worker_id,))
-                row = cur.fetchone()
-                now = datetime.now(timezone.utc)
-                old_until = row[0] if row else None
-                start = old_until if old_until and old_until > now else now
-                new_until = start + timedelta(days=SUBSCRIPTION_DAYS)
-                cur.execute('''UPDATE workers SET subscription_until=%s,payment_pending=FALSE WHERE id=%s''', (new_until, worker_id))
-                cur.execute('''UPDATE subscription_payments
-                               SET status='approved',reviewed_at=NOW(),reviewed_by=%s WHERE id=%s''', (ADMIN_ID, payment_id))
-                message = f'✅ Тўлов #{payment_id} тасдиқланди.\n\n♾️ PRO обуна {new_until.astimezone().strftime("%d.%m.%Y %H:%M")} гача фаол.'
+                if subscription_type == 'ads':
+                    cur.execute('SELECT subscription_until FROM user_subscriptions WHERE telegram_id=%s FOR UPDATE', (worker_tg,))
+                    row = cur.fetchone()
+                    old_until = row[0] if row else None
+                    start = old_until if old_until and old_until > now else now
+                    new_until = start + timedelta(days=SUBSCRIPTION_DAYS)
+                    cur.execute('''INSERT INTO user_subscriptions(telegram_id,subscription_until,payment_pending,updated_at)
+                                   VALUES(%s,%s,FALSE,NOW())
+                                   ON CONFLICT(telegram_id) DO UPDATE SET subscription_until=EXCLUDED.subscription_until,
+                                   payment_pending=FALSE,updated_at=NOW()''', (worker_tg, new_until))
+                else:
+                    cur.execute('SELECT subscription_until FROM workers WHERE id=%s FOR UPDATE', (worker_id,))
+                    row = cur.fetchone()
+                    old_until = row[0] if row else None
+                    start = old_until if old_until and old_until > now else now
+                    new_until = start + timedelta(days=SUBSCRIPTION_DAYS)
+                    cur.execute('UPDATE workers SET subscription_until=%s,payment_pending=FALSE WHERE id=%s', (new_until, worker_id))
+                cur.execute("UPDATE subscription_payments SET status='approved',reviewed_at=NOW(),reviewed_by=%s WHERE id=%s", (ADMIN_ID, payment_id))
+                message = f'✅ Тўлов #{payment_id} тасдиқланди.\n\n♾️ Ойлик обуна {new_until.astimezone().strftime("%d.%m.%Y %H:%M")} гача фаол.'
             else:
-                cur.execute('''UPDATE subscription_payments
-                               SET status='rejected',reviewed_at=NOW(),reviewed_by=%s WHERE id=%s''', (ADMIN_ID, payment_id))
-                cur.execute('UPDATE workers SET payment_pending=FALSE WHERE id=%s', (worker_id,))
-                message = f'❌ Тўлов #{payment_id} рад этилди.\n\nАгар тўлов қилган бўлсангиз, администратор билан боғланинг.'
+                cur.execute("UPDATE subscription_payments SET status='rejected',reviewed_at=NOW(),reviewed_by=%s WHERE id=%s", (ADMIN_ID, payment_id))
+                if subscription_type == 'ads':
+                    cur.execute('UPDATE user_subscriptions SET payment_pending=FALSE,updated_at=NOW() WHERE telegram_id=%s', (worker_tg,))
+                elif worker_id:
+                    cur.execute('UPDATE workers SET payment_pending=FALSE WHERE id=%s', (worker_id,))
+                message = f'❌ Тўлов #{payment_id} рад этилди. Агар тўлов қилган бўлсангиз, администратор билан боғланинг.'
         conn.commit()
     except Exception:
         conn.rollback()
@@ -585,12 +611,11 @@ async def admin_payment_callback(update, context):
         return
     finally:
         conn.close()
-
     await q.edit_message_text(f'#{payment_id} — {"✅ ТАСДИҚЛАНДИ" if action == "approve" else "❌ РАД ЭТИЛДИ"}')
     try:
         await context.bot.send_message(chat_id=worker_tg, text=message)
     except Exception:
-        logger.exception('worker payment result notification failed')
+        logger.exception('subscription payment result notification failed')
 
 
 async def start(update, context):
@@ -786,7 +811,7 @@ async def profile(update, context):
         [InlineKeyboardButton('🔄 Фаол/нофаол', callback_data='toggle')]
     ]
     if not sub or not sub['subscribed']:
-        buttons.append([InlineKeyboardButton('💳 PRO — $1.50/ой', callback_data='payment:info')])
+        buttons.append([InlineKeyboardButton('💳 PRO — 19 990 сўм/ой', callback_data='payment:info')])
     await update.message.reply_text(
         f"👤 МЕНИНГ ПРОФИЛИМ\n\n🌍 Давлат: {cn or '-'}\n🏙 Шаҳар: {city or '-'}\n"
         f"👤 Исм: {name}\n📞 Телефон: {phone}\n🔧 Хизмат: {service}\n📍 Ҳудуд: {area}\n"
@@ -1134,8 +1159,8 @@ async def accept_order(update, context):
             if not subscribed and free_used >= FREE_ORDER_LIMIT:
                 await q.edit_message_text(
                     '🔒 Сиз 7 та бепул буюртмани қабул қилиб бўлдингиз.\n\n'
-                    '💳 Давом этиш учун ойига $1.50 лик PRO обуна керак.',
-                    reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton('💳 $1.50 — PRO', callback_data='payment:info')]])
+                    '💳 Давом этиш учун ойига 19 990 сўмлик PRO обуна керак.',
+                    reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton('💳 19 990 сўм — PRO', callback_data='payment:info')]])
                 )
                 return
 
@@ -1188,7 +1213,7 @@ async def accept_order(update, context):
         if new_free_used < FREE_ORDER_LIMIT:
             extra = f'\n\n🎁 Бепул қолган: {FREE_ORDER_LIMIT - new_free_used} та'
         else:
-            extra = '\n\n🔒 Кейинги буюртмалар учун ойига $1.50 лик PRO обуна керак.'
+            extra = '\n\n🔒 Кейинги буюртмалар учун ойига 19 990 сўмлик PRO обуна керак.'
     await q.edit_message_text(
         f'✅ БУЮРТМА ҚАБУЛ ҚИЛИНДИ!\n\n👤 Мижоз: {cname}\n📞 Телефон: {cphone}\n'
         f'🔧 Хизмат: {service}\n📍 Манзил: {address}\n📝 Муаммо: {problem}{extra}'
@@ -1199,9 +1224,38 @@ async def accept_order(update, context):
         logger.exception('customer notification failed')
 
 
+def get_announcement_subscription(telegram_id):
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute('SELECT subscription_until,COALESCE(payment_pending,FALSE) FROM user_subscriptions WHERE telegram_id=%s', (telegram_id,))
+            row = cur.fetchone()
+            cur.execute('SELECT COUNT(*) FROM announcements WHERE telegram_id=%s', (telegram_id,))
+            count = cur.fetchone()[0]
+            until = row[0] if row else None
+            pending = row[1] if row else False
+            now = datetime.now(timezone.utc)
+            return {'count': count, 'subscription_until': until, 'subscribed': bool(until and until > now), 'payment_pending': pending}
+    finally:
+        conn.close()
+
+
 async def announcement_start(update, context):
+    tg = update.effective_user.id
+    sub = get_announcement_subscription(tg)
+    if not sub['subscribed'] and sub['count'] >= FREE_ANNOUNCEMENT_LIMIT:
+        await update.message.reply_text(
+            '🔒 Сиз 7 та бепул эълон жойлаштирдингиз.\n\n'
+            '📢 Кейинги эълонларни жойлаштириш учун ойлик обуна керак.\n'
+            '💰 Нархи: 19 990 сўм / 30 кун.',
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton('💳 Эълонлар учун обуна', callback_data='payment:ads_info')],
+                                               [InlineKeyboardButton('✅ Тўладим', callback_data='payment:ads_paid')]])
+        )
+        return ConversationHandler.END
     context.user_data['ann'] = {}
-    await update.message.reply_text('🌍 Эълонингиз учун давлатни танланг:', reply_markup=country_keyboard())
+    await update.message.reply_text(
+        f'📢 Эълон бериш: {sub["count"]}/{FREE_ANNOUNCEMENT_LIMIT} та бепул эълон ишлатилган.\n\n'
+        '🌍 Эълонингиз учун давлатни танланг:', reply_markup=country_keyboard())
     return ANN_COUNTRY
 
 
@@ -1701,9 +1755,9 @@ async def payments_cmd(update, context):
     conn = get_connection()
     try:
         with conn.cursor() as cur:
-            cur.execute('''SELECT p.id,p.worker_id,p.telegram_id,p.amount,p.currency,p.status,p.created_at,w.name
+            cur.execute("""SELECT p.id,p.worker_id,p.telegram_id,p.amount,p.currency,p.status,p.created_at,w.name,COALESCE(p.subscription_type,'worker')
                            FROM subscription_payments p LEFT JOIN workers w ON w.id=p.worker_id
-                           ORDER BY p.id DESC LIMIT 50''')
+                           ORDER BY p.id DESC LIMIT 50""")
             rows = cur.fetchall()
     finally:
         conn.close()
@@ -1714,10 +1768,11 @@ async def payments_cmd(update, context):
 
     await update.effective_message.reply_text('💳 PRO ТЎЛОВЛАР:')
     for r in rows:
-        payment_id, worker_id, telegram_id, amount, curr, status, created_at, worker_name = r
+        payment_id, worker_id, telegram_id, amount, curr, status, created_at, worker_name, subscription_type = r
         text = (
             f'#{payment_id} — {status}\n'
-            f'👨‍🔧 {worker_name or "-"}\n'
+            f'📌 Тур: {"Эълончи" if subscription_type == "ads" else "Уста PRO"}\n'
+            f'👤 {worker_name or "Фойдаланувчи"}\n'
             f'🆔 {telegram_id}\n'
             f'💰 {amount} {curr}\n'
             f'🕐 {created_at}'
@@ -1942,7 +1997,7 @@ def build_application():
     app.add_handler(CallbackQueryHandler(admin_broadcast_confirm, pattern=r'^broadcastconfirm:(yes|no)$'))
     app.add_handler(CallbackQueryHandler(admin_worker_action, pattern=r'^workeradmin:(block|unblock|delete|deleteconfirm|deletecancel):\d+$'))
     app.add_handler(CallbackQueryHandler(admin_payment_callback, pattern=r'^payment_admin:(approve|reject):\d+$'))
-    app.add_handler(CallbackQueryHandler(payment_callback, pattern=r'^payment:(info|paid)$'))
+    app.add_handler(CallbackQueryHandler(payment_callback, pattern=r'^payment:(info|paid|worker_info|worker_paid|ads_info|ads_paid)$'))
     app.add_handler(MessageHandler(filters.PHOTO, payment_receipt_photo))
     app.add_handler(CallbackQueryHandler(accept_order, pattern=r'^accept:\d+$'))
     app.add_handler(CallbackQueryHandler(toggle, pattern=r'^toggle$'))

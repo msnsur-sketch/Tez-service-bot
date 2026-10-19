@@ -67,7 +67,7 @@ SERVICES = [
     '🚿 Душ ва ванна ўрнатиш', '🪟 Эшик ва дераза ўрнатиш', '📡 Интернет ва Wi-Fi созлаш',
     '📹 Видеокузатув камераси ўрнатиш', '🚚 Юк ташиш хизмати', '🌳 Боғбон ва ҳовли тозалаш',
     '💇 Сартарош хизмати', '💄 Соч турмаклаш ва макияж', '🧑‍🏫 Репетитор хизмати',
-    '🧵 Тикувчилик', '🐜 Ҳашаротларга қарши кураш'
+    '🧵 Тикувчилик', '🐜 Ҳашаротларга қарши кураш', '🧰 Кунлик ишчи'
 ]
 SERVICE_PATTERN = r'^(?:' + '|'.join(re.escape(x) for x in SERVICES) + r')$'
 ANNOUNCEMENT_TYPES = ['🛒 Сотаман', '🛍 Сотиб оламан', '🏠 Ижарага бераман', '🔑 Ижарага оламан', '📢 Бошқа эълон']
@@ -78,7 +78,7 @@ BACK_MENU_FILTER = filters.Regex(BACK_MENU_PATTERN)
 
 EDIT_INPUT_FILTER = (
     filters.TEXT & ~filters.COMMAND & ~filters.Regex(BACK_MENU_PATTERN) &
-    ~filters.Regex(r'^(?:👤 Менинг профилим|👨‍🔧 Уста чақириш|👨‍🔧 Уста бўлиб рўйхатдан ўтиш|📢 Эълон бериш|🔧 Хизматлар|Алоқа|🌍 Давлат/шаҳар|⬅️ Бош меню)$')
+    ~filters.Regex(r'^(?:👤 Менинг профилим|👨‍🔧 Устаман|👨‍🔧 Уста бўлиб рўйхатдан ўтиш|📢 Эълон бериш|🔧 Хизматлар|Алоқа|🌍 Давлат/шаҳар|⬅️ Бош меню)$')
 )
 
 WORKER_COUNTRY, WORKER_CITY, WORKER_NAME, WORKER_PHONE, WORKER_SERVICE, WORKER_AREA, WORKER_PRICE = range(7)
@@ -281,7 +281,7 @@ def repair_old_workers():
 
 def main_keyboard():
     return ReplyKeyboardMarkup([
-        ['🔧 Хизматлар','👨‍🔧 Уста чақириш'],
+        ['🔧 Хизматлар','👨‍🔧 Устаман'],
         ['📢 Эълон бериш','Алоқа'],
         ['💡 Таклиф юбориш','⚠️ Шикоят юбориш'],
         ['👤 Менинг профилим'],
@@ -2011,7 +2011,7 @@ def build_application():
     app.add_handler(CommandHandler('stats', stats_cmd))
     app.add_handler(MessageHandler(filters.Regex(r'^👤 Менинг профилим$'), profile))
     app.add_handler(MessageHandler(filters.Regex(r'^🔧 Хизматлар$'), services))
-    app.add_handler(MessageHandler(filters.Regex(r'^👨‍🔧 Уста чақириш$'), worker_menu))
+    app.add_handler(MessageHandler(filters.Regex(r'^👨‍🔧 Устаман$'), worker_menu))
     app.add_handler(MessageHandler(filters.Regex(r'^Алоқа$'), contact))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, generic_menu))
     return app

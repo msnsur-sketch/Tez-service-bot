@@ -90,7 +90,7 @@ FEEDBACK_TEXT = 60
 
 
 def get_connection():
-    return psycopg.connect(DATABASE_URL)
+    return psycopg.connect(DATABASE_URL, prepare_threshold=None)
 
 
 def normalize_text(text):
